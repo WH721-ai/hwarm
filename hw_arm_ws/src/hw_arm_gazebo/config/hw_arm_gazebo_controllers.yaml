@@ -1,0 +1,58 @@
+# hw_arm_gazebo 的控制器配置
+#
+# 和 hw_arm_bringup/config/controllers/hw_arm_controllers.yaml 的关系：
+#   · 那份是**真机**用的（joint_trajectory_controller，position 接口）
+#   · 这份是**仿真验证算法**用的（forward_command_controller + effort 接口）
+#   · 刻意分开放：真机配置不该被仿真的 effort 实验污染
+#
+# effort 控制器的话题：/hw_arm_effort_controller/commands
+#   类型：std_msgs/Float64MultiArray
+#   顺序：joint1 .. joint6（与下面的 joints 列表一致）
+#   → launch_mujoco.py 里"发 tau"的回路，在这里就是"发一条 Float64MultiArray"
+
+controller_manager:
+  ros__parameters:
+    # gz_ros2_control 的 controller_manager 跑在 gz 里，用仿真时钟
+    use_sim_time: true
+    # gz_ros2_control 的 controller_manager 跑在 gz 的物理线程上；
+    # 250 Hz 与真机配置一致，方便对比。想要更高控制频率可提到 1000，
+    # 但要先确认 gz 的 max_step_size 是 1 ms（worlds/hw_arm.sdf 已设为 1 ms）。
+    update_rate: 250  # Hz
+
+    # gz 仿真里必须有 joint_state_broadcaster，否则 /joint_states 为空
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    # ★ 算法验证用的力矩控制器
+    hw_arm_effort_controller:
+      type: forward_command_controller/ForwardCommandController
+
+# ── 力矩控制器 ──
+# forward_command_controller 把收到的 Float64MultiArray 原样写进
+# 指定 command_interface。interface_name: effort → 写 data->ctrl（力矩）。
+#
+# 注意：这条接口能在 gz 里生效的前提是
+#   ① description 的 ros2_control xacro 里声明了
+#        <command_interface name="effort"/>      ← 你已经有
+#   ② 硬件插件是 gz_ros2_control/GazeboSimSystem  ← 需要补（见 README）
+hw_arm_effort_controller:
+  ros__parameters:
+    joints:
+      - joint1
+      - joint2
+      - joint3
+      - joint4
+      - joint5
+      - joint6
+    interface_name: effort
+
+# ── 关节状态广播 ──
+joint_state_broadcaster:
+  ros__parameters:
+    joints:
+      - joint1
+      - joint2
+      - joint3
+      - joint4
+      - joint5
+      - joint6

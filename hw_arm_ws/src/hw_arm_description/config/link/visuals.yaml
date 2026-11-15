@@ -1,0 +1,144 @@
+# 视觉几何（看得见的形状）
+#
+# 直接用 CAD 插件导出的 STL（毫米单位，scale=0.001）。
+# 由 scripts/import_plugin_urdf.py 生成。
+base_link:
+  - origin:
+      x: -0.13454588
+      y: 0.012391859
+      z: 0.029617159
+      roll: 0.0
+      pitch: 0.0
+      yaw: 0.0
+    geometry:
+      type: mesh
+      filename: meshes/base_link.stl
+      scale:
+        x: 0.001
+        y: 0.001
+        z: 0.001
+    color:
+      r: 0.35
+      g: 0.36
+      b: 0.38
+      a: 1.0
+link1:
+  - origin:
+      x: -0.13335853
+      y: -0.014591899
+      z: -0.054217159
+      roll: -3.1415927
+      pitch: 0.0
+      yaw: 0.0
+    geometry:
+      type: mesh
+      filename: meshes/link1.stl
+      scale:
+        x: 0.001
+        y: 0.001
+        z: 0.001
+    color:
+      r: 0.55
+      g: 0.57
+      b: 0.6
+      a: 1.0
+link2:
+  - origin:
+      x: -0.12428804
+      y: 0.10721716
+      z: 0.016396569
+      roll: -1.5707963
+      pitch: 0.49489913
+      yaw: 0.0
+    geometry:
+      type: mesh
+      filename: meshes/link2.stl
+      scale:
+        x: 0.001
+        y: 0.001
+        z: 0.001
+    color:
+      r: 0.24
+      g: 0.45
+      b: 0.75
+      a: 1.0
+link3:
+  - origin:
+      x: 0.16394049
+      y: -0.19042962
+      z: -0.087996569
+      roll: 1.5707963
+      pitch: -0.49489913
+      yaw: 0.0
+    geometry:
+      type: mesh
+      filename: meshes/link3.stl
+      scale:
+        x: 0.001
+        y: 0.001
+        z: 0.001
+    color:
+      r: 0.3
+      g: 0.62
+      b: 0.55
+      a: 1.0
+link4:
+  - origin:
+      x: -0.089255048
+      y: 0.23351323
+      z: -0.04074877
+      roll: -1.3987074
+      pitch: -1.0696523
+      yaw: 0.0
+    geometry:
+      type: mesh
+      filename: meshes/link4.stl
+      scale:
+        x: 0.001
+        y: 0.001
+        z: 0.001
+    color:
+      r: 0.75
+      g: 0.55
+      b: 0.3
+      a: 1.0
+link5:
+  - origin:
+      x: -0.099409962
+      y: -0.23626617
+      z: -0.083371577
+      roll: 1.6236805
+      pitch: -0.49814903
+      yaw: 0.0
+    geometry:
+      type: mesh
+      filename: meshes/link5.stl
+      scale:
+        x: 0.001
+        y: 0.001
+        z: 0.001
+    color:
+      r: 0.62
+      g: 0.32
+      b: 0.42
+      a: 1.0
+link6:
+  - origin:
+      x: -0.015790705
+      y: 0.23158136
+      z: -0.21135942
+      roll: -1.7505844
+      pitch: -1.0610974
+      yaw: 0.0
+    geometry:
+      type: mesh
+      filename: meshes/link6.stl
+      scale:
+        x: 0.001
+        y: 0.001
+        z: 0.001
+    color:
+      r: 0.45
+      g: 0.45
+      b: 0.45
+      a: 1.0

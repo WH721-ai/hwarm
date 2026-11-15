@@ -1,0 +1,40 @@
+# 名称映射（规范名 ↔ 原始名）
+#
+# 当前没有 CAD 原始名，全部同名；接入 SolidWorks 导出后填 original 列。
+# 由 scripts/migrate_to_openarm_layout.py 从旧版 config/{joints,links}.yaml 生成
+links:
+  canonical_to_original:
+    base_link: base_link
+    link1: link1
+    link2: link2
+    link3: link3
+    link4: link4
+    link5: link5
+    link6: link6
+    tool0: tool0
+  original_to_canonical:
+    base_link: base_link
+    link1: link1
+    link2: link2
+    link3: link3
+    link4: link4
+    link5: link5
+    link6: link6
+    tool0: tool0
+joints:
+  canonical_to_original:
+    joint1: joint1
+    joint2: joint2
+    joint3: joint3
+    joint4: joint4
+    joint5: joint5
+    joint6: joint6
+    tool0_joint: tool0_joint
+  original_to_canonical:
+    joint1: joint1
+    joint2: joint2
+    joint3: joint3
+    joint4: joint4
+    joint5: joint5
+    joint6: joint6
+    tool0_joint: tool0_joint

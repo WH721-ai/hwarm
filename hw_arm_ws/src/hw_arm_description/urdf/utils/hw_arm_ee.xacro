@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  组件层：末端执行器（对应 OpenArm 的 urdf/utils/openarm_v20_ee.xacro）
+
+  【当前为空】旧版数据里没有独立末端执行器：
+    · 末端法兰 tool0 是 topology 里一个 fixed joint + 一个带视觉圆柱的 link
+    · 没有夹爪、没有 mimic 关节、没有抓取坐标系
+
+  接入夹爪后需要补：
+    · config/ee/ 下的 topology / joint_origins / joint_axes / joint_limits /
+      joint_mimics / visuals / collisions / inertials
+    · 本文件里的 hw_arm_ee 宏（支持 mimic 与 grasp frame）
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- 占位：尚无末端执行器数据 -->
+  <!-- <xacro:macro name="hw_arm_ee" params="prefix connected_to ..."> </xacro:macro> -->
+
+</robot>

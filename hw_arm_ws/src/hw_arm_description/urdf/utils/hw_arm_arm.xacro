@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  组件层：串联臂（照搬 OpenArm 的 urdf/utils/openarm_v20_arm.xacro）
+
+  · 从 topology.yaml 的 links[] / chain[] 读结构，按顺序递归展开
+  · 每个关节的类型也来自 topology（revolute / fixed 混排都支持）
+  · 数据（原点 / 轴 / 限位 / 外形 / 惯性）全部由 robot.xacro 传进来
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:include filename="$(find hw_arm_description)/urdf/utils/hw_arm_utils.xacro" />
+
+  <!-- 逐个关节推进：emit 关节 + 子 link，然后 index+1 递归 -->
+  <xacro:macro name="hw_arm_chain" params="index topology joint_origins joint_axes joint_limits visuals collisions inertials prefix:=''">
+    <xacro:property name="links" value="${topology['links']}" />
+    <xacro:property name="chain" value="${topology['chain']}" />
+
+    <xacro:if value="${index &lt; len(chain)}">
+      <xacro:property name="joint_name" value="${chain[index]}" />
+      <xacro:property name="jcfg" value="${topology['joints'][joint_name]}" />
+      <xacro:hw_emit_joint
+        joint_name="${prefix}${joint_name}"
+        joint_type="${jcfg['type']}"
+        parent_link="${prefix}${links[index]}"
+        child_link="${prefix}${links[index + 1]}"
+        joint_origins="${joint_origins}"
+        joint_axes="${joint_axes}"
+        joint_limits="${joint_limits}"
+        source_name="${joint_name}" />
+
+      <xacro:hw_emit_link
+        link_name="${prefix}${links[index + 1]}"
+        source_name="${links[index + 1]}"
+        visuals="${visuals}"
+        collisions="${collisions}"
+        inertials="${inertials}" />
+
+      <xacro:hw_arm_chain
+        index="${index + 1}"
+        topology="${topology}"
+        joint_origins="${joint_origins}"
+        joint_axes="${joint_axes}"
+        joint_limits="${joint_limits}"
+        visuals="${visuals}"
+        collisions="${collisions}"
+        inertials="${inertials}"
+        prefix="${prefix}" />
+    </xacro:if>
+  </xacro:macro>
+
+  <!-- 入口：先发根 link，再从 index=0 展开整条链 -->
+  <xacro:macro name="hw_arm" params="topology joint_origins joint_axes joint_limits visuals collisions inertials prefix:=''">
+    <xacro:property name="links" value="${topology['links']}" />
+
+    <xacro:hw_emit_link
+      link_name="${prefix}${links[0]}"
+      source_name="${links[0]}"
+      visuals="${visuals}"
+      collisions="${collisions}"
+      inertials="${inertials}" />
+
+    <xacro:hw_arm_chain
+      index="0"
+      topology="${topology}"
+      joint_origins="${joint_origins}"
+      joint_axes="${joint_axes}"
+      joint_limits="${joint_limits}"
+      visuals="${visuals}"
+      collisions="${collisions}"
+      inertials="${inertials}"
+      prefix="${prefix}" />
+  </xacro:macro>
+
+</robot>

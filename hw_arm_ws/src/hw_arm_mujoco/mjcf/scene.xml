@@ -1,0 +1,36 @@
+<mujoco model="hw_arm_scene">
+  <!-- 由 scripts/urdf_to_mjcf.py 生成；机器人本体在 hw_arm.xml -->
+  <include file="hw_arm.xml"/>
+
+  <compiler angle="radian"/>
+  <option timestep="0.001" integrator="implicitfast"/>
+
+  <statistic center="0 0 0.15" extent="0.6" meansize="0.03"/>
+
+  <visual>
+    <headlight diffuse="0.7 0.7 0.7" ambient="0.35 0.35 0.35" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="140" elevation="-20"/>
+    <quality shadowsize="4096"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0"
+             width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+             rgb1="0.20 0.30 0.40" rgb2="0.10 0.20 0.30"
+             markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true"
+              texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <!-- 地面：z=0 平面。机械臂底座已被抬高 30mm，正好站在上面 -->
+    <!-- contype=2 / conaffinity=1：与机械臂（contype=1, conaffinity=0）会碰撞，
+         但机械臂各零件之间不碰撞（见 hw_arm.xml 里 geoms 的 conaffinity=0） -->
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"
+          contype="2" conaffinity="1"/>
+    <camera name="front" pos="0.75 -0.75 0.45" xyaxes="0.707 0.707 0 -0.25 0.25 0.94"/>
+  </worldbody>
+</mujoco>

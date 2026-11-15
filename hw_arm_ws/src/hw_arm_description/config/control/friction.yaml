@@ -1,0 +1,6 @@
+# 摩擦模型参数
+#
+# 旧版数据里没有摩擦辨识结果。
+# 由 scripts/migrate_to_openarm_layout.py 从旧版 config/{joints,links}.yaml 生成
+
+# （当前为空）

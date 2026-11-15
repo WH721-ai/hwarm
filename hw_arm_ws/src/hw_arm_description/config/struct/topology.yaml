@@ -1,0 +1,39 @@
+# 拓扑结构（谁连谁）
+#
+# links[] 的顺序就是运动链顺序；chain[] 是关节顺序。
+# 由 scripts/import_plugin_urdf.py 从 CAD 插件导出的 URDF 生成。
+links: [world, base_link, link1, link2, link3, link4, link5, link6, tool0]
+chain: [world_joint, joint1, joint2, joint3, joint4, joint5, joint6, tool0_joint]
+joints:
+  world_joint:
+    type: fixed
+    parent: world
+    child: base_link
+  joint1:
+    type: revolute
+    parent: base_link
+    child: link1
+  joint2:
+    type: revolute
+    parent: link1
+    child: link2
+  joint3:
+    type: revolute
+    parent: link2
+    child: link3
+  joint4:
+    type: revolute
+    parent: link3
+    child: link4
+  joint5:
+    type: revolute
+    parent: link4
+    child: link5
+  joint6:
+    type: revolute
+    parent: link5
+    child: link6
+  tool0_joint:
+    type: fixed
+    parent: link6
+    child: tool0

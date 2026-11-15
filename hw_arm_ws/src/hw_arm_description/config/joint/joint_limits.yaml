@@ -1,0 +1,40 @@
+# 关节限位（能转多少）
+#
+# 来自旧版 joints.yaml 的 limit；effort 单位 N·m，velocity 单位 rad/s。
+# 由 scripts/migrate_to_openarm_layout.py 从旧版 config/{joints,links}.yaml 生成
+joint1:
+  limit:
+    lower: -1.3963
+    upper: 3.4907
+    effort: 40.0
+    velocity: 16.755
+joint2:
+  limit:
+    lower: -0.17453
+    upper: 3.3161
+    effort: 40.0
+    velocity: 16.755
+joint3:
+  limit:
+    lower: 0.0
+    upper: 2.4435
+    effort: 27.0
+    velocity: 5.4454
+joint4:
+  limit:
+    lower: -1.5708
+    upper: 1.5708
+    effort: 7.0
+    velocity: 20.944
+joint5:
+  limit:
+    lower: -0.7854
+    upper: 0.7854
+    effort: 7.0
+    velocity: 20.944
+joint6:
+  limit:
+    lower: -1.5708
+    upper: 1.5708
+    effort: 7.0
+    velocity: 20.944

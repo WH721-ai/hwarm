@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>hw_arm_algorithms</name>
+  <version>0.1.0</version>
+  <description>
+    hw_arm 的纯计算算法库：动力学模型封装、重力补偿、参数辨识、前馈合成。
+
+    设计原则（见 docs/DESIGN.md）：
+      · 不依赖 ROS（只有 Eigen + pinocchio），可被实时线程、离线脚本、
+        将来的 MCU 代码生成复用
+      · Model / Data 分离：RobotModel 只读，RobotWorkspace 每线程一份
+      · 算法写成自由函数：computeXxx(const RobotModel&amp;, RobotWorkspace&amp;, in, out&amp;)
+      · 热路径零堆分配
+  </description>
+
+  <maintainer email="dev@example.com">hw_arm</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- 构建工具 -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- 核心依赖：只有这两个，刻意不引入 rclcpp -->
+  <depend>eigen</depend>
+  <depend>pinocchio</depend>
+
+  <!-- 测试 -->
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

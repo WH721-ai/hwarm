@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ros2_control 硬件接口声明（6 轴单臂，无夹爪）
+
+  照搬 OpenArm 的 urdf/ros2_control/openarm.ros2_control.xacro，改动：
+    · 7 轴 -> 6 轴，kp1..kp7 -> kp1..kp6
+    · 关节名：openarm_left_jointN  ->  jointN（可用 prefix 加前缀）
+    · 删掉所有夹爪相关的 param 与 joint（finger_joint / kp_hand / ee_type）
+    · 保留 use_fake_hardware 双分支：先 mock 跑通，再切真机
+
+  参数（真机分支）：
+    can_interface        SocketCAN 接口名，默认 can0
+    can_fd               是否 CANFD，默认 false（达妙电机只认经典 CAN）
+    kp1..kp6 / kd1..kd6  MIT 增益（来自 config/control/control_gains.yaml）
+
+  用法：
+    xacro hw_arm.urdf.xacro use_fake_hardware:=true    # mock
+    xacro hw_arm.urdf.xacro use_fake_hardware:=false   # 真机
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- 单个关节的接口声明 -->
+  <xacro:macro name="hw_configure_joint" params="prefix joint_name initial_position:=0.0">
+    <joint name="${prefix}${joint_name}">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <command_interface name="effort"/>
+
+      <state_interface name="position">
+        <param name="initial_value">${initial_position}</param>
+      </state_interface>
+      <state_interface name="velocity">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="effort">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="hw_arm_ros2_control"
+               params="prefix:=''
+                       interface_name:='hw_arm_hardware_interface'
+                       can_interface:='can0'
+                       can_fd:=false
+                       use_fake_hardware:=true
+                       active_joints:='1,2,3,4,5,6'
+                       refresh_per_cycle:='2'
+                       control_gains
+                      use_gazebo:=false">
+
+    <ros2_control name="${interface_name}" type="system">
+      <hardware>
+        <!-- ① Gazebo 仿真：gz_ros2_control 接管硬件读写 -->
+        <xacro:if value="${use_gazebo}">
+          <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+        </xacro:if>
+
+        <!-- ② mock / ③ 真机：保持原有行为完全不变 -->
+        <xacro:unless value="${use_gazebo}">
+        <xacro:if value="${use_fake_hardware}">
+          <plugin>mock_components/GenericSystem</plugin>
+          <param name="fake_sensor_commands">false</param>
+          <param name="state_following_offset">0.0</param>
+        </xacro:if>
+        <xacro:unless value="${use_fake_hardware}">
+          <plugin>hw_arm_hardware/HwArmHW</plugin>
+          <param name="can_interface">${can_interface}</param>
+          <param name="can_fd">${can_fd}</param>
+          <param name="active_joints">${active_joints}</param>
+          <!-- 每周期刷新几台电机（轮转）。0=不刷新。帧数恒定，避免突发丢帧 -->
+          <param name="refresh_per_cycle">${refresh_per_cycle}</param>
+          <param name="kp1">${control_gains['joint1']['kp']}</param>
+          <param name="kp2">${control_gains['joint2']['kp']}</param>
+          <param name="kp3">${control_gains['joint3']['kp']}</param>
+          <param name="kp4">${control_gains['joint4']['kp']}</param>
+          <param name="kp5">${control_gains['joint5']['kp']}</param>
+          <param name="kp6">${control_gains['joint6']['kp']}</param>
+          <param name="kd1">${control_gains['joint1']['kd']}</param>
+          <param name="kd2">${control_gains['joint2']['kd']}</param>
+          <param name="kd3">${control_gains['joint3']['kd']}</param>
+          <param name="kd4">${control_gains['joint4']['kd']}</param>
+          <param name="kd5">${control_gains['joint5']['kd']}</param>
+          <param name="kd6">${control_gains['joint6']['kd']}</param>
+        </xacro:unless>
+        </xacro:unless>
+      </hardware>
+
+      <xacro:hw_configure_joint prefix="${prefix}" joint_name="joint1"/>
+      <xacro:hw_configure_joint prefix="${prefix}" joint_name="joint2"/>
+      <xacro:hw_configure_joint prefix="${prefix}" joint_name="joint3"/>
+      <xacro:hw_configure_joint prefix="${prefix}" joint_name="joint4"/>
+      <xacro:hw_configure_joint prefix="${prefix}" joint_name="joint5"/>
+      <xacro:hw_configure_joint prefix="${prefix}" joint_name="joint6"/>
+
+    </ros2_control>
+
+    <!-- Gazebo 系统插件：只在 use_gazebo:=true 时出现 -->
+    <xacro:if value="${use_gazebo}">
+      <gazebo>
+        <plugin filename="gz_ros2_control-system"
+                name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+          <parameters>$(find hw_arm_gazebo)/config/hw_arm_gazebo_controllers.yaml</parameters>
+        </plugin>
+      </gazebo>
+    </xacro:if>
+  </xacro:macro>
+
+</robot>

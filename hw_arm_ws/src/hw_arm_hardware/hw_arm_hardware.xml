@@ -1,0 +1,9 @@
+<library path="hw_arm_hardware">
+  <class name="hw_arm_hardware/HwArmHW"
+         type="hw_arm_hardware::HwArmHW"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>
+      6-axis hw_arm hardware interface: Damiao motors over SocketCAN / CANFD, MIT control.
+    </description>
+  </class>
+</library>

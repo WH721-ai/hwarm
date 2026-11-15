@@ -1,0 +1,8 @@
+# 装配参考点（挂载 / TCP / 抓取坐标系）
+#
+# 旧版数据里没有装配参考点：tool0 作为法兰已写在 topology 里。
+# 接入 CAD 后在这里补 left_arm_mount_point / grasp_frame 之类的点，
+# 格式参考 OpenArm：<name>: {parent: <link>, origin: {x,y,z,roll,pitch,yaw}}
+# 由 scripts/migrate_to_openarm_layout.py 从旧版 config/{joints,links}.yaml 生成
+
+# （当前为空）

@@ -1,0 +1,34 @@
+# 关节转轴（绕哪个方向转）
+#
+# 插件导出的所有关节都是自身 z 轴；朝向由 origin 的 rpy 承担。
+# 由 scripts/import_plugin_urdf.py 生成。
+joint1:
+  axis:
+    x: 0.0
+    y: 0.0
+    z: 1.0
+joint2:
+  axis:
+    x: 0.0
+    y: 0.0
+    z: 1.0
+joint3:
+  axis:
+    x: 0.0
+    y: 0.0
+    z: 1.0
+joint4:
+  axis:
+    x: 0.0
+    y: 0.0
+    z: 1.0
+joint5:
+  axis:
+    x: 0.0
+    y: 0.0
+    z: 1.0
+joint6:
+  axis:
+    x: 0.0
+    y: 0.0
+    z: 1.0

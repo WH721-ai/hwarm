@@ -1,0 +1,308 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="hw_arm">
+  
+  
+  
+  
+  <link name="world">
+  </link>
+  <joint name="world_joint" type="fixed">
+    <origin rpy="3.141592653589793 0.0 0.0" xyz="0.0 0.0 0.03" />
+    <parent link="world" />
+    <child link="base_link" />
+  </joint>
+  <link name="base_link">
+    <visual name="base_link_visual0">
+      <origin rpy="0.0 0.0 0.0" xyz="-0.13454588 0.012391859 0.029617159" />
+      <geometry>
+        <mesh filename="assets/base_link.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="base_link_visual0_material">
+        <color rgba="0.35 0.36 0.38 1.0" />
+      </material>
+    </visual>
+    <collision name="base_link_collision">
+      <origin rpy="0.0 0.0 0.0" xyz="-0.13454588 0.012391859 0.029617159" />
+      <geometry>
+        <mesh filename="assets/base_link.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0.0 0.0 0.0" xyz="-3.0284266e-07 -5.2644134e-07 -0.00044772025" />
+      <mass value="1.372" />
+      <inertia ixx="0.0014043106" ixy="1.4459024e-10" ixz="-8.6054354e-09" iyy="0.0014147065" iyz="-1.5054873e-08" izz="0.0022748573" />
+    </inertial>
+  </link>
+  <joint name="joint1" type="revolute">
+    <origin rpy="3.1415927 0.0 0.0" xyz="-0.0011873569 -0.0022000401 -0.0246" />
+    <parent link="base_link" />
+    <child link="link1" />
+    <axis xyz="0.0 0.0 1.0" />
+    <limit effort="40.0" lower="-1.3963" upper="3.4907" velocity="16.755" />
+  </joint>
+  <link name="link1">
+    <visual name="link1_visual0">
+      <origin rpy="-3.1415927 0.0 0.0" xyz="-0.13335853 -0.014591899 -0.054217159" />
+      <geometry>
+        <mesh filename="assets/link1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="link1_visual0_material">
+        <color rgba="0.55 0.57 0.6 1.0" />
+      </material>
+    </visual>
+    <collision name="link1_collision">
+      <origin rpy="-3.1415927 0.0 0.0" xyz="-0.13335853 -0.014591899 -0.054217159" />
+      <geometry>
+        <mesh filename="assets/link1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0.0 0.0 0.0" xyz="0.00033850712 -0.0012490216 0.025807643" />
+      <mass value="0.079" />
+      <inertia ixx="0.00013674512" ixy="3.2506022e-05" ixz="6.9902707e-07" iyy="9.3818582e-05" iyz="-2.3696164e-06" izz="0.00014255185" />
+    </inertial>
+  </link>
+  <joint name="joint2" type="revolute">
+    <origin rpy="-1.5707963 0.0 0.49489913" xyz="-0.016195552 0.030008567 0.053" />
+    <parent link="link1" />
+    <child link="link2" />
+    <axis xyz="0.0 0.0 1.0" />
+    <limit effort="40.0" lower="-0.17453" upper="3.3161" velocity="16.755" />
+  </joint>
+  <link name="link2">
+    <visual name="link2_visual0">
+      <origin rpy="-1.5707963 0.49489913 0.0" xyz="-0.12428804 0.10721716 0.016396569" />
+      <geometry>
+        <mesh filename="assets/link2.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="link2_visual0_material">
+        <color rgba="0.24 0.45 0.75 1.0" />
+      </material>
+    </visual>
+    <collision name="link2_collision">
+      <origin rpy="-1.5707963 0.49489913 0.0" xyz="-0.12428804 0.10721716 0.016396569" />
+      <geometry>
+        <mesh filename="assets/link2.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0.0 0.0 0.0" xyz="-0.11708571 -0.033820001 -0.036677914" />
+      <mass value="1.42" />
+      <inertia ixx="0.0032693619" ixy="-0.0075033799" ixz="-0.00045644701" iyy="0.027081332" iyz="-0.00013137531" izz="0.029057491" />
+    </inertial>
+  </link>
+  <joint name="joint3" type="revolute">
+    <origin rpy="-3.1415927 0.0 0.0" xyz="-0.28822853 -0.083212459 -0.0716" />
+    <parent link="link2" />
+    <child link="link3" />
+    <axis xyz="0.0 0.0 1.0" />
+    <limit effort="27.0" lower="0.0" upper="2.4435" velocity="5.4454" />
+  </joint>
+  <link name="link3">
+    <visual name="link3_visual0">
+      <origin rpy="1.5707963 -0.49489913 0.0" xyz="0.16394049 -0.19042962 -0.087996569" />
+      <geometry>
+        <mesh filename="assets/link3.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="link3_visual0_material">
+        <color rgba="0.3 0.62 0.55 1.0" />
+      </material>
+    </visual>
+    <collision name="link3_collision">
+      <origin rpy="1.5707963 -0.49489913 0.0" xyz="0.16394049 -0.19042962 -0.087996569" />
+      <geometry>
+        <mesh filename="assets/link3.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0.0 0.0 0.0" xyz="0.14404661 0.046456784 -0.035088571" />
+      <mass value="0.472" />
+      <inertia ixx="0.00049155787" ixy="-0.00039388752" ixz="-1.4803897e-05" iyy="0.0034584107" iyz="-8.0139188e-06" izz="0.003504026" />
+    </inertial>
+  </link>
+  <joint name="joint4" type="revolute">
+    <origin rpy="1.5707963 -1.4195253 1.4884341" xyz="0.22464921 0.049686746 -0.03495" />
+    <parent link="link3" />
+    <child link="link4" />
+    <axis xyz="0.0 0.0 1.0" />
+    <limit effort="7.0" lower="-1.5708" upper="1.5708" velocity="20.944" />
+  </joint>
+  <link name="link4">
+    <visual name="link4_visual0">
+      <origin rpy="-1.3987074 -1.0696523 0.0" xyz="-0.089255048 0.23351323 -0.04074877" />
+      <geometry>
+        <mesh filename="assets/link4.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="link4_visual0_material">
+        <color rgba="0.75 0.55 0.3 1.0" />
+      </material>
+    </visual>
+    <collision name="link4_collision">
+      <origin rpy="-1.3987074 -1.0696523 0.0" xyz="-0.089255048 0.23351323 -0.04074877" />
+      <geometry>
+        <mesh filename="assets/link4.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0.0 0.0 0.0" xyz="-0.0055965314 -0.00063853617 0.042215121" />
+      <mass value="0.343" />
+      <inertia ixx="0.00022379989" ixy="1.8616431e-06" ixz="8.1813793e-06" iyy="0.00020802949" iyz="-3.2990087e-07" izz="0.00018331202" />
+    </inertial>
+  </link>
+  <joint name="joint5" type="revolute">
+    <origin rpy="-1.5707964 -1.5136313 -1.4661356" xyz="0.018896033 0.0019849256 0.045" />
+    <parent link="link4" />
+    <child link="link5" />
+    <axis xyz="0.0 0.0 1.0" />
+    <limit effort="7.0" lower="-0.7854" upper="0.7854" velocity="20.944" />
+  </joint>
+  <link name="link5">
+    <visual name="link5_visual0">
+      <origin rpy="1.6236805 -0.49814903 0.0" xyz="-0.099409962 -0.23626617 -0.083371577" />
+      <geometry>
+        <mesh filename="assets/link5.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="link5_visual0_material">
+        <color rgba="0.62 0.32 0.42 1.0" />
+      </material>
+    </visual>
+    <collision name="link5_collision">
+      <origin rpy="1.6236805 -0.49814903 0.0" xyz="-0.099409962 -0.23626617 -0.083371577" />
+      <geometry>
+        <mesh filename="assets/link5.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0.0 0.0 0.0" xyz="0.054079648 0.0061104584 -0.017313589" />
+      <mass value="0.336" />
+      <inertia ixx="0.00019200072" ixy="-1.394271e-05" ixz="6.7026415e-05" iyy="0.00031145021" iyz="7.6461602e-06" izz="0.00029133086" />
+    </inertial>
+  </link>
+  <joint name="joint6" type="revolute">
+    <origin rpy="-1.5707963 -1.366829 -1.458055" xyz="0.085454023 0.009675227 -0.021" />
+    <parent link="link5" />
+    <child link="link6" />
+    <axis xyz="0.0 0.0 1.0" />
+    <limit effort="7.0" lower="-1.5708" upper="1.5708" velocity="20.944" />
+  </joint>
+  <link name="link6">
+    <visual name="link6_visual0">
+      <origin rpy="-1.7505844 -1.0610974 0.0" xyz="-0.015790705 0.23158136 -0.21135942" />
+      <geometry>
+        <mesh filename="assets/link6.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="link6_visual0_material">
+        <color rgba="0.45 0.45 0.45 1.0" />
+      </material>
+    </visual>
+    <collision name="link6_collision">
+      <origin rpy="-1.7505844 -1.0610974 0.0" xyz="-0.015790705 0.23158136 -0.21135942" />
+      <geometry>
+        <mesh filename="assets/link6.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0.0 0.0 0.0" xyz="-6.6409394e-08 1.3101879e-08 0.017061868" />
+      <mass value="0.011" />
+      <inertia ixx="3.0247522e-06" ixy="4.2809957e-10" ixz="3.5790682e-11" iyy="3.0266576e-06" iyz="-7.8809261e-12" izz="9.1440425e-07" />
+    </inertial>
+  </link>
+  <joint name="tool0_joint" type="fixed">
+    <origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0" />
+    <parent link="link6" />
+    <child link="tool0" />
+  </joint>
+  <link name="tool0">
+  </link>
+  <ros2_control name="hw_arm_hardware_interface" type="system">
+    <hardware>
+      <plugin>mock_components/GenericSystem</plugin>
+      <param name="fake_sensor_commands">false</param>
+      <param name="state_following_offset">0.0</param>
+    </hardware>
+    <joint name="joint1">
+      <command_interface name="position" />
+      <command_interface name="velocity" />
+      <command_interface name="effort" />
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="effort">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+    </joint>
+    <joint name="joint2">
+      <command_interface name="position" />
+      <command_interface name="velocity" />
+      <command_interface name="effort" />
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="effort">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+    </joint>
+    <joint name="joint3">
+      <command_interface name="position" />
+      <command_interface name="velocity" />
+      <command_interface name="effort" />
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="effort">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+    </joint>
+    <joint name="joint4">
+      <command_interface name="position" />
+      <command_interface name="velocity" />
+      <command_interface name="effort" />
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="effort">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+    </joint>
+    <joint name="joint5">
+      <command_interface name="position" />
+      <command_interface name="velocity" />
+      <command_interface name="effort" />
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="effort">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+    </joint>
+    <joint name="joint6">
+      <command_interface name="position" />
+      <command_interface name="velocity" />
+      <command_interface name="effort" />
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="effort">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+    </joint>
+  </ros2_control>
+</robot>

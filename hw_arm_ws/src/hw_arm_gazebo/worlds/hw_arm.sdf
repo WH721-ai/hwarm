@@ -1,0 +1,87 @@
+<?xml version="1.0"?>
+<!--
+  hw_arm.sdf —— Gazebo (gz sim / Harmonic) 世界
+
+  最小可用配置：物理引擎 + 用户命令（spawn 用）+ 场景广播（rviz/桥接用）+ 地面 + 太阳光。
+  故意**不**依赖 Fuel 在线模型，全部内联，断网也能跑。
+
+  对应 MuJoCo 那边的 mjcf/scene.xml（地面 + 光照 + 相机），本文件只负责"世界"，
+  机器人本体由 launch 里的 ros_gz_sim create 从 URDF spawn 进来。
+-->
+<sdf version="1.9">
+  <world name="hw_arm">
+
+    <!-- 物理：1 ms 步长，和 MJCF 的 timestep 对齐（便于两边实验结果对比） -->
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <gravity>0 0 -9.81</gravity>
+
+    <!-- 必需系统插件 -->
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+
+    <!-- 地面（内联，不用 Fuel） -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>10 10</size>
+            </plane>
+          </geometry>
+          <!-- 摩擦系数：MuJoCo 那边没显式设，这里给个常规值，实验时可调 -->
+          <surface>
+            <friction>
+              <ode>
+                <mu>0.8</mu>
+                <mu2>0.8</mu2>
+              </ode>
+            </friction>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>10 10</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.7 0.7 0.7 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 光照 -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- 相机初始视角（可删） -->
+    <gui fullscreen="false">
+      <camera name="user_camera">
+        <pose>-1.2 -1.2 1.0 0 0.4 0.8</pose>
+      </camera>
+    </gui>
+
+  </world>
+</sdf>

@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  总装层（照搬 OpenArm 的 urdf/utils/openarm_v20_robot.xacro 的职责）
+
+  · 读 config/ 下 5 个子目录的全部 YAML
+  · 把数据分发给组件层（arm / ee / sensor）
+  · 递归处理装配参考点
+
+  与 OpenArm 的差异：当前只有一种形态（单臂），没有 component/preset 的
+  派生与校验逻辑；等出现「双臂 / 换末端 / 多形态」需求时再补 preset 层。
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:include filename="$(find hw_arm_description)/urdf/utils/hw_arm_arm.xacro" />
+  <xacro:include filename="$(find hw_arm_description)/urdf/utils/hw_arm_ee.xacro" />
+  <xacro:include filename="$(find hw_arm_description)/urdf/utils/hw_arm_sensor.xacro" />
+
+  <!-- 递归发射装配参考点（reference_points.yaml 有内容时才会输出） -->
+  <xacro:macro name="hw_emit_reference_points" params="index names refs prefix:=''">
+    <xacro:if value="${index &lt; len(names)}">
+      <xacro:property name="rp_name" value="${names[index]}" />
+      <xacro:hw_emit_reference_link
+        link_name="${prefix}${rp_name}"
+        parent_link="${prefix}${refs[rp_name]['parent']}"
+        origin="${refs[rp_name]['origin']}" />
+      <xacro:hw_emit_reference_points index="${index + 1}" names="${names}" refs="${refs}" prefix="${prefix}" />
+    </xacro:if>
+  </xacro:macro>
+
+  <xacro:macro name="hw_arm_robot" params="config_root prefix:=''">
+
+    <!-- ==================================================== 读数据 -->
+    <xacro:property name="topology"         value="${xacro.load_yaml(config_root + '/struct/topology.yaml')}"         lazy_eval="false" />
+    <xacro:property name="name_mapping"     value="${xacro.load_yaml(config_root + '/struct/name_mapping.yaml')}"     lazy_eval="false" />
+    <xacro:property name="reference_points" value="${xacro.load_yaml(config_root + '/struct/reference_points.yaml')}" lazy_eval="false" />
+    <xacro:property name="joint_origins"    value="${xacro.load_yaml(config_root + '/joint/joint_origins.yaml')}"    lazy_eval="false" />
+    <xacro:property name="joint_axes"       value="${xacro.load_yaml(config_root + '/joint/joint_axes.yaml')}"       lazy_eval="false" />
+    <xacro:property name="joint_limits"     value="${xacro.load_yaml(config_root + '/joint/joint_limits.yaml')}"     lazy_eval="false" />
+    <xacro:property name="visuals"          value="${xacro.load_yaml(config_root + '/link/visuals.yaml')}"            lazy_eval="false" />
+    <xacro:property name="collisions"       value="${xacro.load_yaml(config_root + '/link/collisions.yaml')}"         lazy_eval="false" />
+    <xacro:property name="inertials"        value="${xacro.load_yaml(config_root + '/inertials/nominal.yaml')}"       lazy_eval="false" />
+
+    <!-- ==================================================== 组件 -->
+    <xacro:hw_arm
+      topology="${topology}"
+      joint_origins="${joint_origins}"
+      joint_axes="${joint_axes}"
+      joint_limits="${joint_limits}"
+      visuals="${visuals}"
+      collisions="${collisions}"
+      inertials="${inertials}"
+      prefix="${prefix}" />
+
+    <!-- ================================================ 参考点 -->
+    <xacro:property name="rp_names" value="${list(reference_points.keys()) if reference_points else []}" />
+    <xacro:hw_emit_reference_points index="0" names="${rp_names}" refs="${reference_points if reference_points else dict()}" prefix="${prefix}" />
+
+  </xacro:macro>
+
+</robot>

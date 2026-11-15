@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  六轴机械臂 URDF 入口（照搬 OpenArm 的组织方式）
+
+  分层：
+      config/  ← 数据（struct / joint / link / inertials / control）
+      urdf/    ← 模板（utils 原语 / arm 链 / robot 总装 / ros2_control 接口）
+
+  参数：
+      prefix              关节/link 前缀，默认空 → joint1..joint6
+      use_fake_hardware   true 用 mock_components（默认），false 用真机插件
+      can_interface       SocketCAN 接口名，默认 can0
+      can_fd              是否 CANFD，默认 true
+
+  用法：
+      xacro hw_arm.urdf.xacro                              # mock + 无前缀
+      xacro hw_arm.urdf.xacro use_fake_hardware:=false     # 真机
+      xacro hw_arm.urdf.xacro prefix:=left_                # 加前缀
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="hw_arm">
+
+  <xacro:arg name="prefix" default="" />
+  <xacro:arg name="use_fake_hardware" default="true" />
+  <xacro:arg name="can_interface" default="can0" />
+  <xacro:arg name="can_fd" default="false" />  <!-- 达妙电机只认经典 CAN，不支持 FD -->
+  <xacro:arg name="active_joints" default="1,2,3,4,5,6" />
+  <xacro:arg name="refresh_per_cycle" default="2" />
+  <xacro:arg name="use_gazebo" default="false" />
+
+  <xacro:property name="config_root" value="$(find hw_arm_description)/config" />
+  <xacro:property name="control_gains"
+                  value="${xacro.load_yaml(config_root + '/control/control_gains.yaml')}"
+                  lazy_eval="false" />
+
+  <xacro:include filename="$(find hw_arm_description)/urdf/utils/hw_arm_robot.xacro" />
+  <xacro:include filename="$(find hw_arm_description)/urdf/ros2_control/hw_arm.ros2_control.xacro" />
+
+  <!-- 几何 / 惯性 -->
+  <xacro:hw_arm_robot config_root="${config_root}" prefix="$(arg prefix)" />
+
+  <!-- 控制接口 -->
+  <xacro:hw_arm_ros2_control
+    prefix="$(arg prefix)"
+    can_interface="$(arg can_interface)"
+    can_fd="$(arg can_fd)"
+    use_fake_hardware="$(arg use_fake_hardware)"
+    active_joints="$(arg active_joints)"
+    refresh_per_cycle="$(arg refresh_per_cycle)"
+    use_gazebo="$(arg use_gazebo)"
+    control_gains="${control_gains}" />
+
+</robot>

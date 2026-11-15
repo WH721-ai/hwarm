@@ -1,0 +1,23 @@
+joint1:
+  kp: 70.0
+  kd: 2.75
+
+joint2:
+  kp: 70.0
+  kd: 2.5
+
+joint3:
+  kp: 70.0
+  kd: 2.0
+
+joint4:
+  kp: 60.0
+  kd: 2.0
+
+joint5:
+  kp: 10.0
+  kd: 0.7
+
+joint6:
+  kp: 10.0
+  kd: 0.6

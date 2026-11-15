@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>hw_arm_hardware</name>
+  <version>0.1.0</version>
+  <description>ros2_control SystemInterface for the 6-axis hw_arm (Damiao motors over SocketCAN/CANFD)</description>
+  <maintainer email="user@example.com">hw_arm</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>hardware_interface</depend>
+  <depend>pluginlib</depend>
+  <depend>openarm_can</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

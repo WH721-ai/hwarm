@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  组件层：传感器挂载（对应 OpenArm 的 urdf/utils/openarm_v20_sensor.xacro）
+
+  【当前为空】旧版数据里没有传感器（相机 / IMU 都没有）。
+
+  OpenArm 的做法是「派发器」：按 product 名转发到 assets/sensor/<型号>/urdf_wrapper/。
+  接入相机时按同样方式补：
+    · assets/sensor/<型号>/  (该型号自己的 URDF 包装)
+    · 本文件里增加 <xacro:if value="${product == '<型号>'}"> 分支
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- 占位：尚无传感器数据 -->
+  <!-- <xacro:macro name="hw_arm_sensor" params="product config connected_to mount_origin prefix:=''"> </xacro:macro> -->
+
+</robot>

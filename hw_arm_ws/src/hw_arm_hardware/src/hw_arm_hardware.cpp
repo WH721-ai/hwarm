@@ -1,0 +1,474 @@
+// Copyright 2026 hw_arm
+// Licensed under the Apache License, Version 2.0
+
+#include "hw_arm_hardware/hw_arm_hardware.hpp"
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <sstream>
+#include <thread>
+
+#include "hardware_interface/types/hardware_interface_type_values.hpp"
+#include "pluginlib/class_list_macros.hpp"
+#include "rclcpp/rclcpp.hpp"
+
+namespace hw_arm_hardware {
+
+using hardware_interface::CallbackReturn;
+using hardware_interface::return_type;
+
+namespace {
+rclcpp::Logger logger() { return rclcpp::get_logger("HwArmHW"); }
+rclcpp::Clock& throttle_clock() {
+  static rclcpp::Clock clock(RCL_STEADY_TIME);
+  return clock;
+}
+
+bool to_bool(std::string v, bool fallback) {
+  // ::tolower 对负值是 UB（非 ASCII 字符高位），先转 unsigned char
+  std::transform(v.begin(), v.end(), v.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  if (v == "true" || v == "1") return true;
+  if (v == "false" || v == "0") return false;
+  return fallback;
+}
+
+// MIT 协议的硬性量程（openarm_can 的 double_to_uint 会**静默 clamp**，
+// 超出范围不报错，实际增益被截断 —— 所以必须在入口拦住）
+constexpr double kKpMin = 0.0, kKpMax = 500.0;   // 12 bit
+constexpr double kKdMin = 0.0, kKdMax = 5.0;     // 12 bit
+
+// 安全解析：失败时报错并返回 false，不让 std::stod 抛出去炸掉 controller_manager
+bool parse_double(const std::string& key, const std::string& raw, double& out) {
+  try {
+    size_t pos = 0;
+    const double v = std::stod(raw, &pos);
+    if (pos != raw.size()) throw std::invalid_argument("trailing characters");
+    out = v;
+    return true;
+  } catch (const std::exception&) {
+    RCLCPP_ERROR(logger(), "<param name=\"%s\">\"%s\" 不是合法数字", key.c_str(), raw.c_str());
+    return false;
+  }
+}
+
+// 硬故障：总线已经不可用，继续发帧没有意义
+bool hard_bus_fault(const openarm::canbus::BusStatus& s) {
+  return s.bus_off || s.error_passive || s.write_net_down;
+}
+
+// 打印总线状态（只在出问题时调用）
+void log_bus_status(const openarm::canbus::BusStatus& s, const char* when) {
+  RCLCPP_ERROR(logger(),
+               "[总线异常 @ %s] bus_off=%lu err_passive=%lu err_warn=%lu ack_err=%lu "
+               "tx_ovf=%lu rx_ovf=%lu tx_timeout=%lu net_down=%lu no_buf=%lu other=%lu "
+               "err_frames=%lu ok_writes=%lu TEC=%u REC=%u last_errno=%d",
+               when, static_cast<unsigned long>(s.bus_off.count),
+               static_cast<unsigned long>(s.error_passive.count),
+               static_cast<unsigned long>(s.error_warning.count),
+               static_cast<unsigned long>(s.ack_error.count),
+               static_cast<unsigned long>(s.tx_overflow.count),
+               static_cast<unsigned long>(s.rx_overflow.count),
+               static_cast<unsigned long>(s.tx_timeout.count),
+               static_cast<unsigned long>(s.write_net_down.count),
+               static_cast<unsigned long>(s.write_no_buffer.count),
+               static_cast<unsigned long>(s.write_other.count),
+               static_cast<unsigned long>(s.error_frames),
+               static_cast<unsigned long>(s.writes_ok), s.tec, s.rec, s.last_write_errno);
+}
+}  // namespace
+
+// ────────────────────────────────────────────────────────── 配置解析
+bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
+  const auto& p = info.hardware_parameters;
+  auto get = [&p](const std::string& k) {
+    auto it = p.find(k);
+    return it == p.end() ? std::string{} : it->second;
+  };
+
+  if (!get("can_interface").empty()) can_interface_ = get("can_interface");
+  // 默认 false：实测达妙电机不响应 CANFD 帧（只认经典 CAN）
+  if (!get("can_fd").empty()) can_fd_ = to_bool(get("can_fd"), false);
+  if (!get("require_all_motors").empty())
+    require_all_motors_ = to_bool(get("require_all_motors"), false);
+  if (!get("return_to_zero").empty())
+    return_to_zero_ = to_bool(get("return_to_zero"), false);
+
+  // refresh_per_cycle：每周期刷新几台电机（轮转覆盖全部）。
+  // 0 = 完全不发 refresh（依赖电机自动上报）；默认 2。
+  if (!get("refresh_per_cycle").empty()) {
+    int v = -1;
+    try { v = std::stoi(get("refresh_per_cycle")); } catch (const std::exception&) { v = -1; }
+    if (v < 0 || v > 16) {
+      RCLCPP_ERROR(logger(), "refresh_per_cycle=%s 非法（应为 0~16）",
+                   get("refresh_per_cycle").c_str());
+      return false;
+    }
+    refresh_per_cycle_ = v;
+  }
+  // 兼容旧参数名
+  if (!get("refresh_divider").empty()) {
+    int d = 4;
+    try { d = std::stoi(get("refresh_divider")); } catch (const std::exception&) { d = 4; }
+    if (d >= 1 && !active_idx_.empty()) {
+      refresh_per_cycle_ = std::max<int>(1, static_cast<int>(active_idx_.size() + d - 1) / d);
+      RCLCPP_WARN(logger(), "refresh_divider 已弃用，换算成 refresh_per_cycle=%d",
+                  refresh_per_cycle_);
+    }
+  }
+
+  // active_joints：实际接了电机的关节（1-based，逗号分隔）。默认全部 6 个。
+  // 例：只有 joint1 时传 "1"；有 1~5 时传 "1,2,3,4,5"。
+  active_idx_.clear();
+  const std::string active_raw = get("active_joints");
+  if (active_raw.empty()) {
+    for (size_t i = 0; i < ARM_DOF; ++i) active_idx_.push_back(i);
+  } else {
+    std::stringstream ss(active_raw);
+    std::string tok;
+    while (std::getline(ss, tok, ',')) {
+      if (tok.empty()) continue;
+      try {
+        const int n = std::stoi(tok);
+        if (n < 1 || n > static_cast<int>(ARM_DOF)) {
+          RCLCPP_ERROR(logger(), "active_joints 里的 %d 超范围 [1, %zu]", n, ARM_DOF);
+          return false;
+        }
+        active_idx_.push_back(static_cast<size_t>(n - 1));
+      } catch (const std::exception&) {
+        RCLCPP_ERROR(logger(), "active_joints 含非法项 \"%s\"", tok.c_str());
+        return false;
+      }
+    }
+    std::sort(active_idx_.begin(), active_idx_.end());
+    active_idx_.erase(std::unique(active_idx_.begin(), active_idx_.end()), active_idx_.end());
+    if (active_idx_.empty()) {
+      RCLCPP_ERROR(logger(), "active_joints 解析为空");
+      return false;
+    }
+  }
+  if (require_all_motors_ && active_idx_.size() != ARM_DOF) {
+    RCLCPP_ERROR(logger(), "require_all_motors=true 但 active_joints 只给了 %zu 个", active_idx_.size());
+    return false;
+  }
+  {
+    std::string list;
+    for (size_t i : active_idx_) list += (list.empty() ? "" : ",") + std::to_string(i + 1);
+    RCLCPP_INFO(logger(), "  实际挂载的关节: [%s]（%zu/%zu）", list.c_str(), active_idx_.size(), ARM_DOF);
+  }
+
+  // 增益：URDF 没给 → 用内置默认值但打 WARN（不静默）；
+  //       给了 → 安全解析 + 范围校验（超范围直接失败，避免被驱动静默截断）
+  for (size_t i = 0; i < ARM_DOF; ++i) {
+    const std::string kp_key = "kp" + std::to_string(i + 1);
+    const std::string kd_key = "kd" + std::to_string(i + 1);
+
+    if (p.count(kp_key)) {
+      if (!parse_double(kp_key, get(kp_key), kp_[i])) return false;
+      if (kp_[i] < kKpMin || kp_[i] > kKpMax) {
+        RCLCPP_ERROR(logger(), "%s=%.3f 超出 MIT 协议范围 [%.0f, %.0f]，会被驱动静默截断",
+                     kp_key.c_str(), kp_[i], kKpMin, kKpMax);
+        return false;
+      }
+    } else {
+      RCLCPP_WARN(logger(), "%s 未在 URDF 中提供，使用内置默认值 %.3f", kp_key.c_str(), kp_[i]);
+    }
+
+    if (p.count(kd_key)) {
+      if (!parse_double(kd_key, get(kd_key), kd_[i])) return false;
+      if (kd_[i] < kKdMin || kd_[i] > kKdMax) {
+        RCLCPP_ERROR(logger(), "%s=%.3f 超出 MIT 协议范围 [%.0f, %.0f]，会被驱动静默截断",
+                     kd_key.c_str(), kd_[i], kKdMin, kKdMax);
+        return false;
+      }
+    } else {
+      RCLCPP_WARN(logger(), "%s 未在 URDF 中提供，使用内置默认值 %.3f", kd_key.c_str(), kd_[i]);
+    }
+  }
+
+  RCLCPP_INFO(logger(),
+              "配置: can=%s can_fd=%s require_all=%s return_to_zero=%s refresh_per_cycle=%d",
+              can_interface_.c_str(), can_fd_ ? "true" : "false",
+              require_all_motors_ ? "true" : "false", return_to_zero_ ? "true" : "false",
+              refresh_per_cycle_);
+  return true;
+}
+
+// 关节名直接取 URDF 声明（不再用 "openarm_" + prefix + "jointN" 拼接）
+void HwArmHW::resolve_joint_names(const hardware_interface::HardwareInfo& info) {
+  joint_names_.clear();
+  for (const auto& j : info.joints) joint_names_.push_back(j.name);
+}
+
+// ────────────────────────────────────────────────────────── on_init
+CallbackReturn HwArmHW::on_init(const hardware_interface::HardwareInfo& info) {
+  if (hardware_interface::SystemInterface::on_init(info) != CallbackReturn::SUCCESS) {
+    return CallbackReturn::ERROR;
+  }
+  if (!parse_config(info)) return CallbackReturn::ERROR;
+
+  resolve_joint_names(info);
+
+  if (joint_names_.size() != ARM_DOF) {
+    RCLCPP_ERROR(logger(), "URDF 声明了 %zu 个关节，本插件固定 6 轴（HwArmHW::ARM_DOF=%zu）",
+                 joint_names_.size(), ARM_DOF);
+    return CallbackReturn::ERROR;
+  }
+  for (size_t i = 0; i < ARM_DOF; ++i) {
+    RCLCPP_INFO(logger(), "  joint%zu: %s", i + 1, joint_names_[i].c_str());
+  }
+
+  RCLCPP_INFO(logger(), "打开 %s（CAN-FD %s）…", can_interface_.c_str(),
+              can_fd_ ? "on" : "off");
+  try {
+    openarm_ = std::make_unique<openarm::can::socket::OpenArm>(can_interface_, can_fd_);
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger(), "打开 CAN 接口失败: %s", e.what());
+    return CallbackReturn::ERROR;
+  }
+
+  // 只把「实际存在的电机」注册进去：openarm_can 的所有 _all 操作都作用在这批设备上，
+  // 因此不会对空 ID 发帧（无 ACK 会推高 TEC 直到 bus-off）
+  {
+    std::vector<openarm::damiao_motor::MotorType> types;
+    std::vector<uint32_t> send_ids, recv_ids;
+    for (size_t i : active_idx_) {
+      types.push_back(MOTOR_TYPES[i]);
+      send_ids.push_back(SEND_CAN_IDS[i]);
+      recv_ids.push_back(RECV_CAN_IDS[i]);
+    }
+    openarm_->init_arm_motors(types, send_ids, recv_ids);
+  }
+
+  pos_commands_.assign(ARM_DOF, 0.0);
+  vel_commands_.assign(ARM_DOF, 0.0);
+  tau_commands_.assign(ARM_DOF, 0.0);
+  pos_states_.assign(ARM_DOF, 0.0);
+  vel_states_.assign(ARM_DOF, 0.0);
+  tau_states_.assign(ARM_DOF, 0.0);
+
+  RCLCPP_INFO(logger(), "HwArmHW 初始化完成");
+  return CallbackReturn::SUCCESS;
+}
+
+// ────────────────────────────────────────────────────── on_configure
+CallbackReturn HwArmHW::on_configure(const rclcpp_lifecycle::State& /*prev*/) {
+  if (!openarm_) return CallbackReturn::ERROR;
+  openarm_->refresh_all();
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  openarm_->recv_all();
+  return CallbackReturn::SUCCESS;
+}
+
+// ──────────────────────────────────────────────── export interfaces
+std::vector<hardware_interface::StateInterface> HwArmHW::export_state_interfaces() {
+  std::vector<hardware_interface::StateInterface> out;
+  out.reserve(ARM_DOF * 3);
+  for (size_t i = 0; i < ARM_DOF; ++i) {
+    out.emplace_back(joint_names_[i], hardware_interface::HW_IF_POSITION, &pos_states_[i]);
+    out.emplace_back(joint_names_[i], hardware_interface::HW_IF_VELOCITY, &vel_states_[i]);
+    out.emplace_back(joint_names_[i], hardware_interface::HW_IF_EFFORT, &tau_states_[i]);
+  }
+  return out;
+}
+
+std::vector<hardware_interface::CommandInterface> HwArmHW::export_command_interfaces() {
+  std::vector<hardware_interface::CommandInterface> out;
+  out.reserve(ARM_DOF * 3);
+  for (size_t i = 0; i < ARM_DOF; ++i) {
+    out.emplace_back(joint_names_[i], hardware_interface::HW_IF_POSITION, &pos_commands_[i]);
+    out.emplace_back(joint_names_[i], hardware_interface::HW_IF_VELOCITY, &vel_commands_[i]);
+    out.emplace_back(joint_names_[i], hardware_interface::HW_IF_EFFORT, &tau_commands_[i]);
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────── on_activate
+CallbackReturn HwArmHW::on_activate(const rclcpp_lifecycle::State& /*prev*/) {
+  if (!openarm_) return CallbackReturn::ERROR;
+
+  openarm_->set_callback_mode_all(openarm::damiao_motor::CallbackMode::STATE);
+
+  // ⚠️ 关键：必须先确认能读到反馈，**再**使能。
+  // 之前直接 enable_all() 的问题：此刻还没收到任何状态帧，Motor 里的 position 还是 0，
+  // 于是"把命令初始化为当前位置"等于把命令初始化成 0 —— 一使能电机就被驱动到 0 位。
+  // 实测就是这么把 6 台电机拉回 0 的。
+  bool got_feedback = false;
+  for (int attempt = 0; attempt < 10 && !got_feedback; ++attempt) {
+    openarm_->refresh_all();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    openarm_->recv_all(2000);
+    const auto& ms = openarm_->get_arm().get_motors();
+    for (size_t k = 0; k < active_idx_.size() && k < ms.size(); ++k) {
+      // 位置恰好为 0 且错误码为 0 → 大概率还没收到过帧
+      if (ms[k].get_position() != 0.0 || ms[k].get_error_code() != 0) {
+        got_feedback = true;
+        break;
+      }
+    }
+  }
+  if (!got_feedback) {
+    RCLCPP_ERROR(logger(),
+                 "初始化阶段读不到任何电机反馈（全部 position=0, err=0）。"
+                 "为避免把命令错误地初始化为 0 并把电机驱动到 0 位，拒绝使能。");
+    return CallbackReturn::ERROR;
+  }
+
+  openarm_->enable_all();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  openarm_->recv_all();
+
+  // 打印每台已注册电机的初始状态
+  const auto& motors = openarm_->get_arm().get_motors();
+  for (size_t k = 0; k < active_idx_.size() && k < motors.size(); ++k) {
+    const size_t j = active_idx_[k];
+    const double q = motors[k].get_position();
+    const int err = motors[k].get_error_code();
+    pos_states_[j] = q;
+    // 关键安全措施：命令必须初始化为「当前实测位置」。
+    // 否则 ros2_control 的命令缓冲区是 0，使能后的第一帧 write() 会把 0 发下去，
+    // 电机会以 kp * |q| 的力矩猛冲回零（kp=70、q=1.1rad 时就是 79 N·m）。
+    pos_commands_[j] = q;
+    vel_commands_[j] = 0.0;
+    tau_commands_[j] = 0.0;
+    RCLCPP_INFO(logger(), "  %s: q=%.4f err=0x%X（命令已初始化为当前位置）",
+                joint_names_[j].c_str(), q, err);
+  }
+  RCLCPP_INFO(logger(), "已使能 %zu 台电机", active_idx_.size());
+
+  if (return_to_zero_) {
+    return_to_zero();
+  } else {
+    // 不自动回零时，把当前位姿作为初始命令，避免一上电就往 0 冲
+    for (size_t i = 0; i < ARM_DOF; ++i) {
+      pos_commands_[i] = pos_states_[i];
+      vel_commands_[i] = 0.0;
+      tau_commands_[i] = 0.0;
+    }
+    openarm_->refresh_all();
+    openarm_->recv_all();
+  }
+  return CallbackReturn::SUCCESS;
+}
+
+// ───────────────────────────────────────────────────── on_deactivate
+CallbackReturn HwArmHW::on_deactivate(const rclcpp_lifecycle::State& /*prev*/) {
+  if (openarm_) {
+    for (int i = 0; i < 3; ++i) {
+      openarm_->disable_all();
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      openarm_->recv_all();
+    }
+  }
+  return CallbackReturn::SUCCESS;
+}
+
+// ───────────────────────────────────────────────────────────── read
+return_type HwArmHW::read(const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
+  if (!openarm_) return return_type::ERROR;
+
+  // 状态刷新：每周期刷新 refresh_per_cycle_ 台，轮转覆盖，避免突发
+  if (refresh_per_cycle_ > 0 && !active_idx_.empty()) {
+    const size_t n = active_idx_.size();
+    const size_t cnt = std::min<size_t>(static_cast<size_t>(refresh_per_cycle_), n);
+    for (size_t k = 0; k < cnt; ++k) {
+      openarm_->refresh_one(static_cast<int>((cycle_count_ + k) % n));
+    }
+  }
+  ++cycle_count_;
+  openarm_->recv_all();
+
+  // ① 总线级：bus-off / error-passive / 接口掉线 —— 再发帧也没意义
+  if (hard_bus_fault(openarm_->get_bus_status())) {
+    RCLCPP_ERROR_THROTTLE(logger(), throttle_clock(), 2000,
+                          "CAN 总线硬故障，请求去激活");
+    log_bus_status(openarm_->get_bus_status(), "read");
+    return return_type::ERROR;
+  }
+  // ② 软故障（ack error / FIFO 溢出）：只告警，不中断控制
+  if (!openarm_->is_bus_healthy()) {
+    RCLCPP_WARN_THROTTLE(logger(), throttle_clock(), 5000, "CAN 总线有错误计数，详见日志");
+    log_bus_status(openarm_->get_bus_status(), "read(warn)");
+  }
+
+  // ③ 电机级：把状态按 active_idx_ 映射回关节下标
+  const auto& motors = openarm_->get_arm().get_motors();
+  for (size_t k = 0; k < active_idx_.size() && k < motors.size(); ++k) {
+    const size_t j = active_idx_[k];
+    pos_states_[j] = motors[k].get_position();
+    vel_states_[j] = motors[k].get_velocity();
+    tau_states_[j] = motors[k].get_torque();
+
+    const int err = motors[k].get_error_code();
+    if (err >= 0x8) {  // 0x0 DISABLED / 0x1 ENABLED 之外都是故障
+      RCLCPP_ERROR_THROTTLE(logger(), throttle_clock(), 1000,
+                            "%s 报错 0x%X（0x8+ 为故障），请求去激活",
+                            joint_names_[j].c_str(), err);
+      return return_type::ERROR;
+    }
+  }
+  return return_type::OK;
+}
+
+// ──────────────────────────────────────────────────────────── write
+return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
+  if (!openarm_) return return_type::ERROR;
+
+  // 只给实际存在的电机发指令（顺序必须与 init_arm_motors 的注册顺序一致）
+  std::vector<openarm::damiao_motor::MITParam> params;
+  params.reserve(active_idx_.size());
+  for (size_t j : active_idx_) {
+    params.push_back({kp_[j], kd_[j], pos_commands_[j], vel_commands_[j], tau_commands_[j]});
+  }
+  openarm_->get_arm().mit_control_all(params);
+  openarm_->recv_all(100);
+
+  // 写失败（ENETDOWN / ENOBUFS / 其它 errno）说明链路出问题了
+  if (!openarm_->is_bus_healthy()) {
+    if (hard_bus_fault(openarm_->get_bus_status())) {
+      RCLCPP_ERROR_THROTTLE(logger(), throttle_clock(), 2000, "CAN 写失败且总线硬故障，请求去激活");
+      log_bus_status(openarm_->get_bus_status(), "write");
+      return return_type::ERROR;
+    }
+    RCLCPP_WARN_THROTTLE(logger(), throttle_clock(), 5000, "CAN 写异常（非致命）");
+    log_bus_status(openarm_->get_bus_status(), "write(warn)");
+  }
+  return return_type::OK;
+}
+
+// ─────────────────────────────────────────────────────── 回零（带插值）
+void HwArmHW::return_to_zero() {
+  RCLCPP_INFO(logger(), "回零中…");
+  openarm_->refresh_all();
+  openarm_->recv_all();
+
+  const auto& motors = openarm_->get_arm().get_motors();
+  std::vector<double> start(active_idx_.size(), 0.0);
+  for (size_t k = 0; k < active_idx_.size() && k < motors.size(); ++k) {
+    start[k] = motors[k].get_position();
+  }
+
+  constexpr int kSteps = 100;
+  for (int s = 1; s <= kSteps; ++s) {
+    const double a = static_cast<double>(s) / kSteps;
+    std::vector<openarm::damiao_motor::MITParam> params;
+    params.reserve(active_idx_.size());
+    for (size_t k = 0; k < active_idx_.size(); ++k) {
+      const size_t j = active_idx_[k];
+      params.push_back({kp_[j], kd_[j], start[k] * (1.0 - a), 0.0, 0.0});
+    }
+    openarm_->get_arm().mit_control_all(params);
+    openarm_->recv_all(5);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  for (size_t i = 0; i < ARM_DOF; ++i) {
+    pos_commands_[i] = 0.0;
+    vel_commands_[i] = 0.0;
+    tau_commands_[i] = 0.0;
+  }
+}
+
+}  // namespace hw_arm_hardware
+
+PLUGINLIB_EXPORT_CLASS(hw_arm_hardware::HwArmHW, hardware_interface::SystemInterface)

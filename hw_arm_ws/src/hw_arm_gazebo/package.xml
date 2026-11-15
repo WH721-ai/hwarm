@@ -1,0 +1,57 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>hw_arm_gazebo</name>
+  <version>0.1.0</version>
+  <description>
+    hw_arm 的 Gazebo (gz sim / Harmonic) 仿真包。
+
+    设计原则（与 hw_arm_mujoco 对称）：
+      · 一个仿真器 = 一个包。仿真依赖（ros_gz_sim / gz_ros2_control）只在这里，
+        真机和 MuJoCo 的环境不必安装
+      · 本包只做「环境 + 组装」：world、launch、控制器配置、算法节点
+      · 机器人本体（URDF/mesh/ros2_control 标签）仍在 hw_arm_description
+      · 算法仍在 hw_arm_algorithms（本包只是它的消费者）
+
+    分工（对应 MuJoCo 那一套）：
+      worlds/   ← 对应 hw_arm_mujoco/mjcf/scene.xml
+      launch/   ← 对应 hw_arm_mujoco/launch
+      config/   ← 对应 hw_arm_mujoco 读的 control_gains.yaml（这边是控制器 yaml）
+      src/      ← 以后放算法节点（gravity_node），对应 launch_mujoco.py 里的控制回路
+  </description>
+
+  <maintainer email="dev@example.com">hw_arm</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- 算法节点（gravity_node）的编译依赖 -->
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>ament_index_cpp</depend>
+
+  <!-- 机器人本体与算法 -->
+  <exec_depend>hw_arm_description</exec_depend>
+  <depend>hw_arm_algorithms</depend>
+  <exec_depend>xacro</exec_depend>
+
+  <!-- Gazebo -->
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>gz_ros2_control</exec_depend>
+
+  <!-- ros2_control -->
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>forward_command_controller</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+
+  <!-- launch -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

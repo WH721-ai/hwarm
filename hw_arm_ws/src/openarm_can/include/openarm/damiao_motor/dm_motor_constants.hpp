@@ -166,7 +166,8 @@ inline constexpr std::array<LimitParam, static_cast<std::size_t>(MotorType::COUN
         {12.5, 280, 1},   // DMH3510
         {12.5, 45, 10},   // DMH6215
         {12.5, 45, 10},   // DMG6220
-        {12.5, 20, 120},  // DM6216P —— 占位（暂借 DM6248P 量程），待手册确认
-        {12.5, 10, 30}    // DM4310P —— 占位（估计值），待手册确认
+        // ↓ 以下两项 2026-11-19 从电机固件 RID21/22/23 直接读出，非估计值
+        {12.566, 40, 70},  // DM6216P  ← joint2 实测：PMAX 12.566 / VMAX 40 / TMAX 70
+        {12.5, 30, 10}     // DM4310P  ← joint4 实测：PMAX 12.5 / VMAX 30 / TMAX 10
     }};
 }  // namespace openarm::damiao_motor

@@ -72,8 +72,20 @@ class HwArmHW : public hardware_interface::SystemInterface {
   };
 
   // ── CAN ID（与 OpenArm 一致，去掉第 7 组）
+  // CAN ID 默认值：joint i ↔ 发送 0x0i / 接收 0x1i
+  // 可用参数覆盖（见 send_can_ids_ / recv_can_ids_）。
   const std::vector<uint32_t> SEND_CAN_IDS = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
   const std::vector<uint32_t> RECV_CAN_IDS = {0x11, 0x12, 0x13, 0x14, 0x15, 0x16};
+
+  // ── 实际使用的 CAN ID 表（可被参数覆盖，用于"电机装反了但不想改固件 ID"）
+  //
+  // 场景：joint5 / joint6 的电机物理上装反了，CAN5 的电机在 joint6 位置。
+  // 两种修法：
+  //   A. 改电机固件 ID（有风险，中途失败会出现两个同 ID 的电机）
+  //   B. **改这张映射表**（零风险，一行配置）：joint_can_ids = 1 2 3 4 6 5
+  // 推荐 B —— 两边都是 DM4310，型号一致，交换后没有任何副作用。
+  std::vector<uint32_t> send_can_ids_ = SEND_CAN_IDS;
+  std::vector<uint32_t> recv_can_ids_ = RECV_CAN_IDS;
 
   // ── 默认增益（URDF 给了就用 URDF 的）
   std::vector<double> kp_ = {70.0, 70.0, 70.0, 60.0, 10.0, 10.0};

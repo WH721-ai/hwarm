@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <sstream>
 #include <thread>
 
@@ -234,6 +235,62 @@ bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
     }
   }
 
+  // ── CAN ID 映射（电机装反了但不想改固件 ID 时用）
+  //
+  //   <param name="joint_can_ids">1 2 3 4 6 5</param>
+  //       joint1..joint6 各自用哪个电机发送 ID，接收 ID 自动 = 发送 ID + 0x10
+  //   <param name="joint_master_ids">0x11 0x12 0x13 0x14 0x16 0x15</param>
+  //       显式指定接收 ID（Master ID 不等于 +0x10 时才需要）
+  if (p.count("joint_can_ids")) {
+    const auto toks = split_ws(get("joint_can_ids"));
+    if (toks.size() != ARM_DOF) {
+      RCLCPP_ERROR(logger(), "joint_can_ids 需要 %zu 个值，实际 %zu 个：\"%s\"",
+                   ARM_DOF, toks.size(), get("joint_can_ids").c_str());
+      return false;
+    }
+    std::vector<uint32_t> ids;
+    for (const auto& t : toks) {
+      char* end = nullptr;
+      const unsigned long v = std::strtoul(t.c_str(), &end, 0);  // 支持 5 和 0x05
+      if (end == t.c_str() || v == 0 || v > 0x7FF) {
+        RCLCPP_ERROR(logger(), "joint_can_ids 里有非法 ID：\"%s\"", t.c_str());
+        return false;
+      }
+      ids.push_back(static_cast<uint32_t>(v));
+    }
+    // 检查重复：同一个 ID 出现两次会互相打架
+    for (size_t a = 0; a < ids.size(); ++a)
+      for (size_t b = a + 1; b < ids.size(); ++b)
+        if (ids[a] == ids[b]) {
+          RCLCPP_ERROR(logger(), "joint_can_ids 有重复 ID 0x%02X（关节 %zu 和 %zu）",
+                       ids[a], a + 1, b + 1);
+          return false;
+        }
+    send_can_ids_ = ids;
+    for (size_t i = 0; i < ARM_DOF; ++i) recv_can_ids_[i] = send_can_ids_[i] + 0x10;
+    RCLCPP_INFO(logger(), "CAN ID 映射（来自 joint_can_ids）:");
+    for (size_t i = 0; i < ARM_DOF; ++i)
+      RCLCPP_INFO(logger(), "  joint%zu → 发送 0x%02X / 接收 0x%02X",
+                  i + 1, send_can_ids_[i], recv_can_ids_[i]);
+  }
+  if (p.count("joint_master_ids")) {
+    const auto toks = split_ws(get("joint_master_ids"));
+    if (toks.size() != ARM_DOF) {
+      RCLCPP_ERROR(logger(), "joint_master_ids 需要 %zu 个值，实际 %zu 个",
+                   ARM_DOF, toks.size());
+      return false;
+    }
+    for (size_t i = 0; i < ARM_DOF; ++i) {
+      char* end = nullptr;
+      const unsigned long v = std::strtoul(toks[i].c_str(), &end, 0);
+      if (end == toks[i].c_str() || v == 0 || v > 0x7FF) {
+        RCLCPP_ERROR(logger(), "joint_master_ids 里有非法 ID：\"%s\"", toks[i].c_str());
+        return false;
+      }
+      recv_can_ids_[i] = static_cast<uint32_t>(v);
+    }
+  }
+
   RCLCPP_INFO(logger(),
               "配置: can=%s can_fd=%s require_all=%s return_to_zero=%s refresh_per_cycle=%d",
               can_interface_.c_str(), can_fd_ ? "true" : "false",
@@ -282,8 +339,8 @@ CallbackReturn HwArmHW::on_init(const hardware_interface::HardwareInfo& info) {
     std::vector<uint32_t> send_ids, recv_ids;
     for (size_t i : active_idx_) {
       types.push_back(MOTOR_TYPES[i]);
-      send_ids.push_back(SEND_CAN_IDS[i]);
-      recv_ids.push_back(RECV_CAN_IDS[i]);
+      send_ids.push_back(send_can_ids_[i]);
+      recv_ids.push_back(recv_can_ids_[i]);
     }
     openarm_->init_arm_motors(types, send_ids, recv_ids);
   }

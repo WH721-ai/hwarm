@@ -88,6 +88,13 @@
                只有 joint2 / joint3 反向，其余同向。
                ⚠️ 这两个值和真机的装配方向绑定，换电机/换装配后必须重新测 -->
           <param name="direction">+1 -1 -1 +1 +1 +1</param>
+          <!-- CAN ID 映射：joint1..joint6 各自用哪个电机发送 ID（接收 ID 自动 +0x10）
+               ⚠️ 2026-11-15：joint5 / joint6 的电机**物理装反了**
+                  （CAN5 的电机在 joint6 位置，CAN6 的在 joint5 位置），
+                  所以这里把后两位交换：1 2 3 4 6 5
+               这样不用改电机固件 ID，零风险。
+               如果以后把线重新接回「5→joint5、6→joint6」，删掉这行即可。 -->
+          <param name="joint_can_ids">1 2 3 4 6 5</param>
         </xacro:unless>
         </xacro:unless>
       </hardware>

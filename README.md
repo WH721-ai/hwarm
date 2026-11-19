@@ -15,7 +15,7 @@ hw_arm/
 │       ├── hw_arm_bringup/        launch + controller 配置
 │       ├── hw_arm_mujoco/         MuJoCo 仿真环境（不含算法）
 │       ├── hw_arm_gazebo/         Gazebo 仿真 + 算法节点
-│       └── openarm_can/           第三方 CAN 驱动（git submodule）
+│       └── openarm_can/           第三方 CAN 驱动（已 vendor，含本地补丁）
 ├── algo/                          离线算法与辨识工具箱（Python）
 └── reference/                     参考用的第三方代码（不入库）
 ```
@@ -58,15 +58,17 @@ sudo apt install ros-jazzy-ros-gz
 ### 编译
 
 ```bash
-git clone --recursive <this-repo> hw_arm
+git clone <this-repo> hw_arm
 cd hw_arm/hw_arm_ws
 rosdep install --from-paths src --ignore-src -y
 colcon build --symlink-install
 source install/setup.bash
 ```
 
-> `openarm_can` 是 git submodule，用 `--recursive` 克隆或
-> `git submodule update --init --recursive`。
+> `openarm_can` 是**随仓库提交的第三方源码**（不是 submodule），带一处本地补丁
+> （新增 DM6216P / DM4310P 两种电机型号）。补丁内容见
+> `hw_arm_ws/src/openarm_can/PATCHES.md` —— 量程目前是**占位值**，拿到达妙手册后
+> 需要校正，否则 MIT 协议的扭矩归一化会偏。
 
 ### 跑测试
 
@@ -185,4 +187,5 @@ MuJoCo 侧的两个关键设置（都是踩过坑的）：
 ## 七、许可
 
 本仓库自有代码：Apache-2.0。
-`hw_arm_ws/src/openarm_can` 为第三方（Enactic, Apache-2.0），通过 submodule 引入。
+`hw_arm_ws/src/openarm_can` 为第三方（Enactic, Apache-2.0），源码随仓库提交，
+本地补丁见 `PATCHES.md`。

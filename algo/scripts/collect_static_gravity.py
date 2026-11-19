@@ -186,6 +186,34 @@ class ArmBus:
             n += 1
         return n
 
+    def fresh_q(self, ids: list[int], timeout: float = 1.0,
+                need: int = 6) -> np.ndarray | None:
+        """**读一份新鲜的位置**，读不到就返回 None。
+
+        为什么必须有这一步：
+            电机是"被动"的，不发查询就不回帧。`self.state` 里存的可能是
+            **上一次**收到的值（甚至是初始化的 0）。
+            用它当 MIT 的目标位 = 把机械臂往旧位置拉 —— 实测会导致
+            "一按回车就以最高速度冲回零点"。
+        """
+        self.state_reset(ids)
+        t_end = time.monotonic() + timeout
+        counts = {i: 0 for i in ids}
+        while time.monotonic() < t_end:
+            self.query()
+            self.poll()
+            for i in ids:
+                if self.state[i]["seen"]:
+                    counts[i] += 1
+            if all(counts[i] >= need for i in ids):
+                return np.array([DIRECTION[i - 1] * self.state[i]["q"] for i in ids])
+            time.sleep(0.003)
+        return None
+
+    def state_reset(self, ids: list[int]):
+        for i in ids:
+            self.state[i]["seen"] = False
+
     def settle(self, seconds: float):
         t_end = time.monotonic() + seconds
         while time.monotonic() < t_end:
@@ -207,44 +235,77 @@ def joint_frame(bus: ArmBus, ids: list[int]):
 
 
 def acquire_one(bus: ArmBus, ids: list[int], kp: float, kd: float,
-                hold_s: float, settle_s: float):
-    """在当前姿态使能 → 等稳定 → 采样 → 失能。返回 (q, tau) 或 None。"""
-    q0, _, _ = joint_frame(bus, ids)
+                settle_s: float, sample_s: float, quiet: float = 0.02):
+    """在当前姿态使能 → 等稳定 → 采样 → 失能。
 
-    # 目标 = 当前位置（**不动**），只是"扶住"
+    返回 (q, tau, dq_max)：
+        q      关节角（关节坐标系，rad）
+        tau    保持力矩（关节坐标系，N·m）
+        dq_max 采样期间的|dq|最大值，用来判断"是不是真的静止"
+
+    返回 None 表示采样失败（帧太少）。
+    """
+    # ★ 必须先读一份**新鲜**位置，不能用缓存的旧值（旧值会让机械臂冲回去）
+    q0 = bus.fresh_q(ids, timeout=1.0)
+    if q0 is None:
+        print("     ❌ 读不到新鲜位置（CAN 丢帧太多），跳过这个姿态 —— 不使能")
+        return None
+
     cmd = {i: (kp, kd, DIRECTION[i - 1] * q0[k], 0.0, 0.0)
            for k, i in enumerate(ids)}
-    bus.enable()
-    time.sleep(0.1)
 
-    t_end = time.monotonic() + hold_s
-    samples = []
+    # ★ kp 软启动：0 → kp 用 0.3 s 爬上去，避免"一使能就顶一下"
+    bus.enable()
+    t_ramp = time.monotonic() + 0.3
+    while time.monotonic() < t_ramp:
+        a = max(0.0, min(1.0, (0.3 - (t_ramp - time.monotonic())) / 0.3))
+        soft = {i: (kp * a, kd, DIRECTION[i - 1] * q0[k], 0.0, 0.0)
+                for k, i in enumerate(ids)}
+        bus.mit(soft)
+        bus.poll()
+        time.sleep(0.002)
+
+    # ★ 超速看门狗：使能后 0.4 s 内任何关节 |dq| 超过 1.5 rad/s → 立刻失能
+    t_wd = time.monotonic() + 0.4
+    while time.monotonic() < t_wd:
+        bus.mit(cmd)
+        bus.poll()
+        _, dq, _ = joint_frame(bus, ids)
+        if np.abs(dq).max() > 1.5:
+            bus.disable()
+            time.sleep(0.1)
+            print(f"     ❌ 使能后出现高速运动 |dq|max={np.abs(dq).max():.2f} rad/s，"
+                  f"已紧急失能，跳过这个姿态")
+            return None
+        time.sleep(0.002)
+
+    # ① 稳定阶段：让 PD 收敛（会有轻微下沉，这是正常的）
+    t_end = time.monotonic() + settle_s
     while time.monotonic() < t_end:
         bus.mit(cmd)
         bus.poll()
         time.sleep(0.002)
-        samples.append((time.monotonic(),))
 
-    # 稳定后采样（后半段）
-    time.sleep(settle_s)
-    qs, taus = [], []
-    t_end = time.monotonic() + hold_s
+    # ② 采样阶段：取中位数，抗单帧噪声
+    qs, taus, dqs = [], [], []
+    t_end = time.monotonic() + sample_s
     while time.monotonic() < t_end:
         bus.mit(cmd)
         bus.poll()
         q, dq, tau = joint_frame(bus, ids)
         qs.append(q)
         taus.append(tau)
+        dqs.append(dq)
         time.sleep(0.002)
 
     bus.disable()
-    time.sleep(0.15)
+    time.sleep(0.10)
 
-    if len(qs) < 5:
+    if len(qs) < 10:
         return None
-    qs = np.array(qs)
-    taus = np.array(taus)
-    return np.median(qs, axis=0), np.median(taus, axis=0)
+    qs, taus, dqs = np.array(qs), np.array(taus), np.array(dqs)
+    return (np.median(qs, axis=0), np.median(taus, axis=0),
+            float(np.abs(dqs).max()))
 
 
 def main() -> int:
@@ -255,7 +316,10 @@ def main() -> int:
     ap.add_argument("--mode", default="manual", choices=["manual", "auto"])
     ap.add_argument("--kp", type=float, default=25.0)
     ap.add_argument("--kd", type=float, default=1.0)
-    ap.add_argument("--hold", type=float, default=1.2, help="每个姿态保持秒数")
+    ap.add_argument("--settle", type=float, default=0.8,
+                    help="使能后等 PD 收敛的秒数（默认 0.8）")
+    ap.add_argument("--hold", type=float, default=0.8,
+                    help="收敛后采样多少秒（默认 0.8）")
     ap.add_argument("--auto-step", type=float, default=5.0,
                     help="auto 模式每次每关节随机偏转的最大角度（度）")
     ap.add_argument("--out", default=None)
@@ -275,6 +339,8 @@ def main() -> int:
     print(f"  目标   : {args.poses} 个姿态")
     print(f"  模式   : {'手动摆位（每个姿态按回车）' if args.mode == 'manual' else '自动摆位'}")
     print(f"  kp/kd  : {args.kp} / {args.kd}   （很小，只是'扶住'）")
+    print(f"  每个姿态: 稳定 {args.settle}s + 采样 {args.hold}s ≈ "
+          f"{args.settle + args.hold + 0.2:.1f}s")
     print(f"  direction: {DIRECTION}")
     print()
     print("  ⚠️ 采集时电机会使能，但**只保持当前位置**，不会主动动")
@@ -284,7 +350,7 @@ def main() -> int:
     records = []
     try:
         if args.mode == "manual":
-            print("\n  操作：用手把机械臂摆到一个新姿态 → 按回车 → 脚本扶住 1.2 s 并记录")
+            print("\n  操作：用手把机械臂摆到一个新姿态 → 按回车 → 脚本扶住约 1.6 s 并记录")
             print("  （姿态差别越大越好：大臂抬高/放低、肘部弯/伸、腕部转）\n")
         else:
             print("\n  自动模式：从当前姿态出发，每次随机偏转 ±%.1f°\n" % args.auto_step)
@@ -295,10 +361,11 @@ def main() -> int:
                 input(f"  [{k+1}/{args.poses}] 摆好姿态后按回车…")
             else:
                 # 自动：在前一个姿态基础上随机偏一点
-                bus.settle(0.05)
                 if base_q is None:
-                    bus.settle(0.3)
-                    base_q, _, _ = joint_frame(bus, ids)
+                    base_q = bus.fresh_q(ids, timeout=1.0)
+                    if base_q is None:
+                        print("  ❌ 读不到新鲜位置，退出")
+                        break
                 step = np.radians(args.auto_step)
                 target = base_q + np.random.uniform(-step, step, len(ids))
                 for m, i in enumerate(ids):
@@ -316,11 +383,16 @@ def main() -> int:
                 time.sleep(0.15)
                 base_q = target
 
-            res = acquire_one(bus, ids, args.kp, args.kd, args.hold, 0.10)
+            res = acquire_one(bus, ids, args.kp, args.kd,
+                              args.settle, args.hold)
             if res is None:
-                print("     ⚠️ 采样失败，跳过")
+                print("     ⚠️ 采样失败（帧太少），跳过")
                 continue
-            q, tau = res
+            q, tau, dq_max = res
+            if dq_max > 0.05:
+                print(f"     ⚠️ 没完全静止（|dq|max={dq_max:.3f} rad/s），"
+                      f"这一条仍记录，但拟合时会体现为残差")
+
             records.append({"q": q.tolist(), "tau": tau.tolist()})
             print(f"     q(deg) = {np.round(np.degrees(q), 1)}")
             print(f"     tau    = {np.round(tau, 3)} N·m")

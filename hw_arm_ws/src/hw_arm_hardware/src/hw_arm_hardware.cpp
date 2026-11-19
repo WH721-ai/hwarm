@@ -79,6 +79,15 @@ void log_bus_status(const openarm::canbus::BusStatus& s, const char* when) {
 }
 }  // namespace
 
+// 按空白切分（" +1 -1 -1 " → {"+1","-1","-1"}）
+static std::vector<std::string> split_ws(const std::string& s) {
+  std::vector<std::string> out;
+  std::istringstream iss(s);
+  std::string tok;
+  while (iss >> tok) out.push_back(tok);
+  return out;
+}
+
 // ────────────────────────────────────────────────────────── 配置解析
 bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
   const auto& p = info.hardware_parameters;
@@ -184,6 +193,44 @@ bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
       }
     } else {
       RCLCPP_WARN(logger(), "%s 未在 URDF 中提供，使用内置默认值 %.3f", kd_key.c_str(), kd_[i]);
+    }
+
+    // ── direction：电机转向（C-02）
+    // 支持两种写法：
+    //   <param name="direction">+1 -1 -1 +1 +1 +1</param>   ← 一个参数覆盖全部
+    //   <param name="direction1">+1</param> ...             ← 逐个给（优先）
+    {
+      const std::string one = "direction" + std::to_string(i + 1);
+      std::string txt;
+      if (p.count(one)) {
+        txt = get(one);
+      } else if (direction_vec_.empty() && p.count("direction")) {
+        direction_vec_ = split_ws(get("direction"));   // 懒解析一次
+        if (direction_vec_.size() != ARM_DOF) {
+          RCLCPP_ERROR(logger(), "direction 需要 %zu 个值，实际 %zu 个：\"%s\"",
+                       ARM_DOF, direction_vec_.size(), get("direction").c_str());
+          return false;
+        }
+      }
+      if (!txt.empty()) {
+        double v = 0.0;
+        if (!parse_double(one, txt, v)) return false;
+        direction_[i] = v;
+      } else if (!direction_vec_.empty()) {
+        double v = 0.0;
+        if (!parse_double(one, direction_vec_[i], v)) return false;
+        direction_[i] = v;
+      } else {
+        RCLCPP_WARN(logger(),
+                    "%s 未在 URDF 中提供，使用内置默认值 %+.0f"
+                    "（先用 scripts/mirror_check.py 实测，别猜）",
+                    one.c_str(), direction_[i]);
+      }
+      if (direction_[i] != 1.0 && direction_[i] != -1.0) {
+        RCLCPP_ERROR(logger(), "%s=%+.0f 非法，只能是 +1 或 -1",
+                     one.c_str(), direction_[i]);
+        return false;
+      }
     }
   }
 
@@ -396,9 +443,11 @@ return_type HwArmHW::read(const rclcpp::Time& /*time*/, const rclcpp::Duration& 
   const auto& motors = openarm_->get_arm().get_motors();
   for (size_t k = 0; k < active_idx_.size() && k < motors.size(); ++k) {
     const size_t j = active_idx_[k];
-    pos_states_[j] = motors[k].get_position();
-    vel_states_[j] = motors[k].get_velocity();
-    tau_states_[j] = motors[k].get_torque();
+    // 电机坐标系 → 关节坐标系（C-02）
+    const double d = direction_[j];
+    pos_states_[j] = d * motors[k].get_position();
+    vel_states_[j] = d * motors[k].get_velocity();
+    tau_states_[j] = d * motors[k].get_torque();
 
     const int err = motors[k].get_error_code();
     if (err >= 0x8) {  // 0x0 DISABLED / 0x1 ENABLED 之外都是故障
@@ -419,7 +468,13 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
   std::vector<openarm::damiao_motor::MITParam> params;
   params.reserve(active_idx_.size());
   for (size_t j : active_idx_) {
-    params.push_back({kp_[j], kd_[j], pos_commands_[j], vel_commands_[j], tau_commands_[j]});
+    // 关节坐标系 → 电机坐标系（C-02）
+    // kp/kd 不乘 direction（增益是正定的）；位置/速度/力矩都要乘。
+    const double d = direction_[j];
+    params.push_back({kp_[j], kd_[j],
+                      d * pos_commands_[j],
+                      d * vel_commands_[j],
+                      d * tau_commands_[j]});
   }
   openarm_->get_arm().mit_control_all(params);
   openarm_->recv_all(100);

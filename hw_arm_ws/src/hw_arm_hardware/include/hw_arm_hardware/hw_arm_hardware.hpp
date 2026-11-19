@@ -79,6 +79,23 @@ class HwArmHW : public hardware_interface::SystemInterface {
   std::vector<double> kp_ = {70.0, 70.0, 70.0, 60.0, 10.0, 10.0};
   std::vector<double> kd_ = {2.75, 2.5, 2.0, 2.0, 0.7, 0.6};
 
+  // ── 电机转向（待办 C-02）
+  //
+  // 达妙电机自己的 +q 和 URDF 的 +q 不一定同向，取决于电机装到关节上的朝向。
+  // 两边**各自都满足右手定则**，差的只是"两个轴的指向关系"，只能实测。
+  //
+  // 实测方法见 scripts/mirror_check.py（实时镜像：手拖真机，看 RViz 跟不跟）。
+  // 2026-11-15 在真机上测得：只有 joint2 / joint3 反向。
+  //
+  // 映射关系（direction[i] = +1 或 -1）：
+  //   read()  : joint_pos[i] = direction[i] * motor_pos[i]
+  //   write() : motor_cmd[i] = direction[i] * joint_cmd[i]
+  // 力/力矩同号处理：MIT 的 tau_ff 也要乘 direction。
+  // 增益 kp/kd 不乘 —— 它们是正定的，与方向无关。
+  std::vector<double> direction_ = {+1.0, -1.0, -1.0, +1.0, +1.0, +1.0};
+  // direction 参数写成 " +1 -1 -1 +1 +1 +1 " 时的缓存（懒解析）
+  std::vector<std::string> direction_vec_;
+
   // ── 配置
   std::string can_interface_ = "can0";
   bool can_fd_ = true;

@@ -79,6 +79,7 @@ class CanFD:
     """CANFD 原始套接字封装（canfd_frame: <IBBBB64s, 72 字节）。"""
 
     def __init__(self, ifname: str = "can0", fd: bool = True):
+        self.fd = fd
         self.sock = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
         if fd:
             self.sock.setsockopt(socket.SOL_CAN_RAW, socket.CAN_RAW_FD_FRAMES, 1)
@@ -86,8 +87,15 @@ class CanFD:
         self.sock.settimeout(0.002)
 
     def send(self, can_id: int, data: bytes):
-        frame = struct.pack("<IBBBB64s", can_id, len(data), 0, 0, 0,
-                            data.ljust(64, b"\x00"))
+        # ⚠️ 经典 CAN 必须发 16 字节的 can_frame，不能发 72 字节的 canfd_frame
+        #    —— 往经典模式接口发 canfd_frame 会 OSError: [Errno 22] Invalid argument
+        if self.fd:
+            frame = struct.pack("<IBBBB64s", can_id, len(data), 0, 0, 0,
+                                data.ljust(64, b"\x00"))
+        else:
+            # struct can_frame: can_id(4) + dlc(1) + pad(3) + data[8]
+            frame = struct.pack("<IB3x8s", can_id, len(data),
+                                data.ljust(8, b"\x00"))
         self.sock.send(frame)
 
     def recv_all(self, timeout: float = 0.005):
@@ -95,7 +103,7 @@ class CanFD:
         out, t_end = [], time.monotonic() + timeout
         while time.monotonic() < t_end:
             try:
-                raw = self.sock.recv(CANFD_MTU)
+                raw = self.sock.recv(CANFD_MTU if self.fd else 16)
             except (socket.timeout, BlockingIOError):
                 break
             can_id, length = struct.unpack("<IB", raw[:5])
@@ -147,6 +155,7 @@ class Bus:
         self.state = {i: {"q": 0.0, "dq": 0.0, "tau": 0.0, "err": 0,
                           "t_mos": 0, "t_rotor": 0} for i in ids}
         self.other_frames = []
+        self.dropped = 0        # 因 TX 队列满而丢弃的查询帧数
 
     def _special(self, cmd: int):
         for i in self.ids:
@@ -196,9 +205,34 @@ class Bus:
             st["can_id"] = can_id
             self.state[target] = st
 
-    def wait_first_state(self, timeout=1.0) -> int:
+    def query(self):
+        """广播刷新帧 —— 让电机主动回一帧状态。
+
+        ⚠️ 达妙电机是**被动**的：不被查询就不发帧。
+           所以 monitor/scan 必须先发一帧查询，否则永远收到 0 台。
+        帧格式（官方 SDK）：CAN ID = 0x7FF，dlc=4，[id_lo, id_hi, 0xCC, 0x00]
+        发到广播地址，总线上任何电机都会 ACK；目标电机认领 ID 后回状态。
+        """
+        for i in self.ids:
+            try:
+                self.can.send(0x7FF,
+                              bytes([i & 0xFF, (i >> 8) & 0xFF, 0xCC, 0x00]))
+            except OSError as e:
+                # ENOBUFS(105)：CAN 发送队列满（默认 txqueuelen=10）。
+                # 查询帧丢了就丢了，下一轮会重发，不要让整个脚本崩掉。
+                if e.errno == 105:
+                    self.dropped += 1
+                    continue
+                raise
+
+    def wait_first_state(self, timeout=1.0, resend=0.1) -> int:
         t_end = time.monotonic() + timeout
+        next_q = 0.0
         while time.monotonic() < t_end:
+            now = time.monotonic()
+            if now >= next_q:          # 限速：每 100 ms 发一轮查询
+                self.query()
+                next_q = now + resend
             self.poll(0.02)
             n = sum(1 for i in self.ids if self.state[i].get("seen"))
             if n == len(self.ids):

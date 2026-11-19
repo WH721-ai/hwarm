@@ -12,6 +12,7 @@
     can_interface        SocketCAN 接口名，默认 can0
     can_fd               是否 CANFD，默认 false（达妙电机只认经典 CAN）
     kp1..kp6 / kd1..kd6  MIT 增益（来自 config/control/control_gains.yaml）
+    direction            电机转向 ±1（C-02，真机实测，见 mirror_check.py）
 
   用法：
     xacro hw_arm.urdf.xacro use_fake_hardware:=true    # mock
@@ -82,6 +83,11 @@
           <param name="kd4">${control_gains['joint4']['kd']}</param>
           <param name="kd5">${control_gains['joint5']['kd']}</param>
           <param name="kd6">${control_gains['joint6']['kd']}</param>
+          <!-- 电机转向（C-02）。+1 = 电机 +q 与 URDF +q 同向，-1 = 反向。
+               2026-11-15 真机实测（scripts/mirror_check.py 实时镜像）：
+               只有 joint2 / joint3 反向，其余同向。
+               ⚠️ 这两个值和真机的装配方向绑定，换电机/换装配后必须重新测 -->
+          <param name="direction">+1 -1 -1 +1 +1 +1</param>
         </xacro:unless>
         </xacro:unless>
       </hardware>

@@ -111,6 +111,54 @@ def uint_to_float(u: int, lo: float, hi: float, bits: int) -> float:
 
 
 # ──────────────────────────────────────────────────────────────
+# 重力前馈（必须有！）
+# ──────────────────────────────────────────────────────────────
+# 为什么采集时必须加：
+#   使能后如果只靠位置环（kp·误差）托住，kp 小了会掉下去，kp 大了会抖。
+#   更致命的是"kp 从 0 软启动"——前 0.3 s 力矩≈0，机械臂在重力下**自由落体**：
+#       实测估算 j2 = 68°/0.3s，j3 = 89°/0.3s，j5 = 348°/0.3s
+#   这就是"一按回车机械臂就冲回去"的真正原因。
+#
+#   加上 tau_ff = g(q0) 之后，力矩一开始就是对的，机械臂几乎不动。
+#   而且辨识时测到的仍然是**总力矩**（tau_ff + kp·误差），
+#   所以前馈不会污染辨识结果 —— 模型不准的部分由 PD 自动补上。
+_URDF_CANDIDATES = [
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                 "hw_arm_ws", "install", "hw_arm_description", "share",
+                 "hw_arm_description", "urdf", "hw_arm.urdf"),
+]
+
+
+def load_gravity_model(urdf: str | None = None):
+    """加载 Pinocchio 模型，返回 (model, data) 或 (None, None)。"""
+    try:
+        import pinocchio as pin
+    except ImportError:
+        print("  ⚠️ 没有 pinocchio（需 source /opt/ros/jazzy/setup.bash），"
+              "将退化为纯位置环 —— 机械臂会下垂/下落")
+        return None, None
+    path = urdf
+    if path is None:
+        for c in _URDF_CANDIDATES:
+            if os.path.isfile(c):
+                path = c
+                break
+    if path is None or not os.path.isfile(path):
+        print("  ⚠️ 找不到 URDF，将退化为纯位置环")
+        return None, None
+    model = pin.buildModelFromUrdf(path)
+    print(f"  ✅ 重力前馈模型: {path}")
+    return model, model.createData()
+
+
+def gravity_tau(model, data, q_joint: np.ndarray) -> np.ndarray:
+    """关节坐标系下的重力力矩 g(q)。"""
+    import pinocchio as pin
+    return np.asarray(pin.rnea(model, data, q_joint,
+                               np.zeros(model.nv), np.zeros(model.nv)))
+
+
+# ──────────────────────────────────────────────────────────────
 # CAN
 # ──────────────────────────────────────────────────────────────
 class ArmBus:
@@ -249,7 +297,8 @@ def joint_frame(bus: ArmBus, ids: list[int]):
 
 
 def acquire_one(bus: ArmBus, ids: list[int], kp: float, kd: float,
-                settle_s: float, sample_s: float, quiet: float = 0.02):
+                settle_s: float, sample_s: float,
+                grav_model=None, grav_data=None, quiet: float = 0.02):
     """在当前姿态使能 → 等稳定 → 采样 → 失能。
 
     返回 (q, tau, dq_max)：
@@ -265,27 +314,31 @@ def acquire_one(bus: ArmBus, ids: list[int], kp: float, kd: float,
         print("     ❌ 读不到新鲜位置（CAN 丢帧太多），跳过这个姿态 —— 不使能")
         return None
 
-    cmd = {i: (kp, kd, DIRECTION[i - 1] * q0[k], 0.0, 0.0)
+    # 重力前馈：tau_ff = g(q0)，转到电机坐标系
+    tau_ff_joint = np.zeros(len(ids))
+    if grav_model is not None:
+        g = gravity_tau(grav_model, grav_data, q0)
+        tau_ff_joint = np.asarray(g[:len(ids)])
+    cmd = {i: (kp, kd, DIRECTION[i - 1] * q0[k], 0.0,
+               DIRECTION[i - 1] * tau_ff_joint[k])
            for k, i in enumerate(ids)}
 
-    # ★ kp 软启动：0 → kp 用 0.3 s 爬上去，避免"一使能就顶一下"
+    # ⚠️ 不要做 kp 软启动！目标本来就是当前位置，没有位置阶跃；
+    #    软启动只会让力矩在最初几百毫秒接近 0 → 重力下自由落体。
     bus.enable()
-    t_ramp = time.monotonic() + 0.3
-    while time.monotonic() < t_ramp:
-        a = max(0.0, min(1.0, (0.3 - (t_ramp - time.monotonic())) / 0.3))
-        soft = {i: (kp * a, kd, DIRECTION[i - 1] * q0[k], 0.0, 0.0)
-                for k, i in enumerate(ids)}
-        bus.mit(soft)
-        bus.poll()
+    # 使能后第一帧就发**满 kp + 满重力前馈**
+    for _ in range(5):
+        bus.mit(cmd)
         time.sleep(0.002)
+    bus.poll()
 
-    # ★ 超速看门狗：使能后 0.4 s 内任何关节 |dq| 超过 1.5 rad/s → 立刻失能
-    t_wd = time.monotonic() + 0.4
+    # 超速看门狗：使能后 0.5 s 内任何关节 |dq| 超过 3 rad/s → 立刻失能
+    t_wd = time.monotonic() + 0.5
     while time.monotonic() < t_wd:
         bus.mit(cmd)
         bus.poll()
         _, dq, _ = joint_frame(bus, ids)
-        if np.abs(dq).max() > 1.5:
+        if np.abs(dq).max() > 3.0:
             bus.disable()
             time.sleep(0.1)
             print(f"     ❌ 使能后出现高速运动 |dq|max={np.abs(dq).max():.2f} rad/s，"
@@ -337,6 +390,8 @@ def main() -> int:
     ap.add_argument("--auto-step", type=float, default=5.0,
                     help="auto 模式每次每关节随机偏转的最大角度（度）")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--urdf", default=None,
+                    help="重力前馈用的 URDF（默认用安装好的 hw_arm.urdf）")
     args = ap.parse_args()
 
     ids = [int(x) for x in args.ids.split(",") if x.strip()]
@@ -372,6 +427,8 @@ def main() -> int:
         return 3
     else:
         print(f"  ✅ CAN 发送正常（TXF {t0} → {t1}）")
+
+    grav_model, grav_data = load_gravity_model(args.urdf)
 
     bus = ArmBus(args.interface, ids)
 
@@ -431,7 +488,8 @@ def main() -> int:
                 base_q = target
 
             res = acquire_one(bus, ids, args.kp, args.kd,
-                              args.settle, args.hold)
+                              args.settle, args.hold,
+                              grav_model, grav_data)
             if res is None:
                 print("     ⚠️ 采样失败（帧太少），跳过")
                 continue

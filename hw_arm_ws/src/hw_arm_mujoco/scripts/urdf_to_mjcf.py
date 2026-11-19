@@ -48,6 +48,21 @@ import xml.etree.ElementTree as ET
 # ── 我们的电机选型（与硬件一致，不随 URDF 变）───────────────────────
 # trated     电机**额定**力矩 N·m  ← 默认的 ctrlrange / forcerange（滑条范围）
 # tmax       电机**峰值**力矩 N·m  ← 加 --motor-tmax 时用
+#
+# ⚠️ 三个「最大力矩」不是一回事，别混：
+#     额定 trated      能长期连续输出的力矩（不烧电机）   ← 仿真默认用这个
+#     峰值 tmax        短时间能冲到的力矩
+#     协议 TMAX        电机固件 RID23，MIT 12bit 字段能表示的上限
+#
+#   约束：下发指令 ≤ 协议 TMAX；实际出力 ≤ min(峰值, 协议 TMAX)
+#
+#   协议 TMAX 是 2026-11-19 从六台电机固件直接读出来的
+#   （scripts/read_motor_registers.py，RID 21/22/23）：
+#       j1 DM10010L 200 | j2 DM6216P 70 | j3 DM4340 28
+#       j4 DM4310P   10 | j5 DM4310  10 | j6 DM4310   10
+#
+#   → 所以 joint4 的峰值只能填 **10**（原来填 11，已经超过协议上限，
+#     意味着仿真允许一个真机永远给不出来的力矩）
 # armature   转子惯量折算到关节侧 kg·m²
 #            DM4310/DM4340 抄 OpenArm 的实测值；DM10010L/DM6216P 暂无数据，
 #            先用 0.01 占位，等做过 sysid 再换。
@@ -59,7 +74,7 @@ MOTORS = {
     "joint1": dict(model="DM10010L", trated=20.0, tmax=200.0, armature=0.0100),
     "joint2": dict(model="DM6216P",  trated=10.0, tmax=45.0,  armature=0.0100),
     "joint3": dict(model="DM4340",   trated=9.0,  tmax=27.0,  armature=0.1600),
-    "joint4": dict(model="DM4310P",  trated=3.5,  tmax=11.0,  armature=0.0100),
+    "joint4": dict(model="DM4310P",  trated=3.5,  tmax=10.0,  armature=0.0100),
     "joint5": dict(model="DM4310",   trated=3.0,  tmax=7.0,   armature=0.0100),
     "joint6": dict(model="DM4310",   trated=3.0,  tmax=7.0,   armature=0.0100),
 }

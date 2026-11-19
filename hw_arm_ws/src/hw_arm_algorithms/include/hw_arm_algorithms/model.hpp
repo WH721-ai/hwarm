@@ -30,9 +30,13 @@ struct LoadOptions {
   ///
   /// 注意 Pinocchio 的 computeTotalMass **不含固定在世界的根连杆**，
   /// 所以 base_link（1.372 kg）不计入。新结构（CAD 导入）：
-  ///   base_link 1.372（固定） + link1..6 = 2.661 kg（可动）
+  ///   base_link 1.372（固定） + link1..6 = 2.7513 kg（可动）
+  /// 2026-11-19：按真机逐件称重更新（link1 97 g / link2 1428.5 g /
+  /// link3 497.5 g / link4 357.1 g / link5 360.2 g；link6 末端法兰保持 CAD 的 11 g，
+  /// 因为称重报的是 0 g —— 质量 0 会让惯量张量全 0，不物理也过不了正定性校验），
+  /// 旧值是 CAD 手工填的 2.661 kg。
   /// 旧结构是 4.268755（当时 base_link 没有质量）。
-  double expected_total_mass = 2.661000;
+  double expected_total_mass = 2.751300;
   double mass_tolerance = 0.01;
   /// 末端帧名，留空表示不检查
   std::string ee_frame = "tool0";

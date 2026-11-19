@@ -17,23 +17,23 @@
     <frame pos="0 0 0.03" quat="0 1 0 0">
       <geom name="base_link_collision" pos="-0.134546 0.0123919 0.0296172" quat="1 0 0 0" type="mesh" conaffinity="0" rgba="0.35 0.36 0.38 1" mesh="base_link"/>
       <body name="link1" pos="-0.00118736 -0.00220004 -0.0246" quat="-2.32051e-08 1 0 0">
-        <inertial pos="0.000338507 -0.00124902 0.0258076" quat="0.676626 0.694084 0.190967 0.154779" mass="0.079" diaginertia="0.000154257 0.000142618 7.6241e-05"/>
+        <inertial pos="0.000338507 -0.00124902 0.0258076" quat="0.676626 0.694084 0.190967 0.154779" mass="0.097" diaginertia="0.000189404 0.000175113 9.36123e-05"/>
         <joint name="joint1" range="-1.3963 3.4907" actuatorfrcrange="-40 40" armature="0.01" damping="0.05 0.05 0.05" frictionloss="0.1"/>
         <geom name="link1_collision" pos="-0.133359 -0.0145919 -0.0542172" quat="-2.32051e-08 -1 0 0" type="mesh" conaffinity="0" rgba="0.55 0.57 0.6 1" mesh="link1"/>
         <body name="link2" pos="-0.0161956 0.0300086 0.053" quat="0.685568 -0.685568 -0.173193 0.173193">
-          <inertial pos="-0.117086 -0.03382 -0.0366779" quat="0.427915 0.422053 0.559803 0.570421" mass="1.42" diaginertia="0.0292485 0.0290656 0.00109414"/>
+          <inertial pos="-0.117086 -0.03382 -0.0366779" quat="0.427915 0.422053 0.559803 0.570421" mass="1.4285" diaginertia="0.0294236 0.0292395 0.00110069"/>
           <joint name="joint2" range="-0.17453 3.3161" actuatorfrcrange="-40 40" armature="0.01" damping="0.05 0.05 0.05" frictionloss="0.1"/>
           <geom name="link2_collision" pos="-0.124288 0.107217 0.0163966" quat="0.685568 -0.685568 0.173193 0.173193" type="mesh" conaffinity="0" rgba="0.24 0.45 0.75 1" mesh="link2"/>
           <body name="link3" pos="-0.288229 -0.0832125 -0.0716" quat="-2.32051e-08 -1 0 0">
-            <inertial pos="0.144047 0.0464568 -0.0350886" quat="0.597574 0.299324 0.638624 0.381405" mass="0.472" diaginertia="0.00351363 0.00350029 0.000440074"/>
+            <inertial pos="0.144047 0.0464568 -0.0350886" quat="0.597574 0.299324 0.638624 0.381405" mass="0.4975" diaginertia="0.00370346 0.00368939 0.000463849"/>
             <joint name="joint3" range="0 2.4435" actuatorfrcrange="-27 27" armature="0.16" damping="0.05 0.05 0.05" frictionloss="0.1"/>
             <geom name="link3_collision" pos="0.16394 -0.19043 -0.0879966" quat="0.685568 0.685568 -0.173193 0.173193" type="mesh" conaffinity="0" rgba="0.3 0.62 0.55 1" mesh="link3"/>
             <body name="link4" pos="0.224649 0.0496867 -0.03495" quat="0.0824141 0.706687 0.0243581 0.702288">
-              <inertial pos="-0.00559653 -0.000638536 0.0422151" quat="0.99407 -0.0176886 -0.0956151 0.0486761" mass="0.343" diaginertia="0.000225568 0.000207869 0.000181704"/>
+              <inertial pos="-0.00559653 -0.000638536 0.0422151" quat="0.99407 -0.0176886 -0.0956151 0.0486761" mass="0.3571" diaginertia="0.000234841 0.000216415 0.000189173"/>
               <joint name="joint4" range="-1.5708 1.5708" actuatorfrcrange="-7 7" armature="0.01" damping="0.05 0.05 0.05" frictionloss="0.1"/>
               <geom name="link4_collision" pos="-0.089255 0.233513 -0.0407488" quat="0.658396 -0.553832 -0.390046 -0.3281" type="mesh" conaffinity="0" rgba="0.75 0.55 0.3 1" mesh="link4"/>
               <body name="link5" pos="0.018896 0.00198493 0.045" quat="0.0571516 -0.706907 -0.0167907 -0.704793">
-                <inertial pos="0.0540796 0.00611046 -0.0173136" quat="-0.0314468 0.849544 0.0463939 0.524531" mass="0.336" diaginertia="0.000325113 0.000313056 0.000156613"/>
+                <inertial pos="0.0540796 0.00611046 -0.0173136" quat="-0.0314468 0.849544 0.0463939 0.524531" mass="0.3602" diaginertia="0.000348529 0.000335603 0.000167893"/>
                 <joint name="joint5" range="-0.7854 0.7854" actuatorfrcrange="-7 7" armature="0.01" damping="0.05 0.05 0.05" frictionloss="0.1"/>
                 <geom name="link5_collision" pos="-0.09941 -0.236266 -0.0833716" quat="0.666928 0.703165 -0.169637 0.178854" type="mesh" conaffinity="0" rgba="0.62 0.32 0.42 1" mesh="link5"/>
                 <body name="link6" pos="0.085454 0.00967523 -0.021" quat="0.111506 -0.706371 0.0322421 -0.69826">

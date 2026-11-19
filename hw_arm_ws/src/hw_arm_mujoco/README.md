@@ -258,9 +258,9 @@ joint5 → 0.1 N·m + 限位），`q` 就不动了。
 **按住不动（`hold --show-torque`）**：三者相等，这是**重力补偿正确的标志**。
 
 ```
-     ctrl|   -0.000    2.245    2.672    0.015    0.190    0.000
- qfrc_act|   -0.000    2.245    2.672    0.015    0.190    0.000
-qfrc_bias|   -0.000    2.245    2.672    0.015    0.190    0.000
+     ctrl|   -0.000    2.285    2.821    0.016    0.202    0.000
+ qfrc_act|   -0.000    2.285    2.821    0.016    0.202    0.000
+     mj_g|   -0.000    2.285    2.821    0.016    0.202    0.000
 ```
 
 ### 相关开关
@@ -343,9 +343,9 @@ t=0.3s  mj_g   = [0, 2.545, 2.543, 0.014, 0.190, 0]
 URDF 直接导入 MuJoCo 后，两者算出的动力学完全一致（随机 5 个姿态）：
 
 ```
-质量矩阵   MuJoCo vs Pinocchio CRBA :  最大相对误差 3.4e-15
-重力矩     qfrc_bias vs rnea        :  最大绝对误差 1.8e-15 N·m
-总质量     MuJoCo 2.6610 kg  ==  Pinocchio computeTotalMass 2.6610 kg
+质量矩阵   MuJoCo vs Pinocchio CRBA :  差 0.16（来自 armature，Pinocchio 不计）
+重力矩     qfrc_bias vs rnea        :  最大绝对误差 9.8e-06 N·m
+总质量     MuJoCo 2.7513 kg  ==  Pinocchio computeTotalMass 2.7513 kg
 q=0 link6 世界位置差                 :  7.3e-07 m
 ```
 

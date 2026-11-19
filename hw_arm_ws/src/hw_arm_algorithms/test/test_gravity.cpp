@@ -61,7 +61,8 @@ TEST_F(GravityTest, MatchesPythonBaselineAtZero) {
   // 基线随几何更新（2026-11 换成 CAD 插件导出的新结构 + base_link 绕 X 翻 180°）。
   // base_link 的 +z 现在是重力方向，机械臂正立向上。
   // 历史上：未翻转时 g[1]=-2.2450；OpenArm 结构 g[1]=4.4900。
-  const std::vector<double> expected = {0.0, 2.24503, 2.67158, 0.01505, 0.18958, 0.0};
+  // 2026-11-19 真机逐件称重后（总质量 2.661 → 2.7403 kg）重新计算
+  const std::vector<double> expected = {0.0, 2.28541, 2.82136, 0.01553, 0.20244, 0.0};
   for (int i = 0; i < nv_; ++i) {
     EXPECT_NEAR(g[i], expected[static_cast<size_t>(i)], 1e-3)
         << "joint" << (i + 1) << " 重力矩与基线不符";
@@ -106,7 +107,7 @@ TEST_F(GravityTest, Joint2CarriesTheArm) {
   for (int i = 0; i < nv_; ++i) {
     EXPECT_LE(std::abs(g[i]), std::abs(g[argmax]) + 1e-9)
         << "最大重力矩应在 joint" << (argmax + 1) << "，但 joint" << (i + 1)
-        << " 更大（新结构实测 joint3 = +2.672, joint2 = +2.245）";
+        << " 更大（新结构实测 joint3 = +2.821, joint2 = +2.285）";
   }
 }
 

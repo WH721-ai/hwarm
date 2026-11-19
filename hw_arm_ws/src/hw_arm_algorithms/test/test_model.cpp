@@ -72,10 +72,10 @@ TEST_F(ModelTest, JointOrder) {
 }
 
 // ④ 总质量应与 CAD 一致（防 URDF 被改坏）
-//    新结构：computeTotalMass = 2.661 kg（不含固定的 base_link 1.372 kg）
+//    新结构：computeTotalMass = 2.7513 kg（不含固定的 base_link 1.372 kg）
 //    旧结构曾是 4.268755
 TEST_F(ModelTest, TotalMass) {
-  EXPECT_NEAR(model_.totalMass(), 2.661, 0.01);
+  EXPECT_NEAR(model_.totalMass(), 2.7513, 0.01);
 }
 
 // ⑤ 每个连杆惯性必须物理合理

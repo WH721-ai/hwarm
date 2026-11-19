@@ -172,6 +172,11 @@ def main() -> int:
     ap.add_argument("--rate", type=float, default=30.0, help="发布频率 Hz")
     ap.add_argument("--ids", default="1,2,3,4,5,6")
     ap.add_argument("--flip", default="", help="取反的关节号，如 2 或 2,5")
+    ap.add_argument("--direction", default="",
+                    help='按硬件层的 direction 套用符号，如 "+1,-1,-1,+1,+1,+1"。'
+                         '套上之后 RViz 应该和真机完全同步 → 可用来验证 direction 配置')
+    ap.add_argument("--no-direction-hint", action="store_true",
+                    help="不打印「本脚本发的是电机原始角」的提示")
     ap.add_argument("--joint", type=int, default=0,
                     help="只镜像这一个关节（1~6），其它保持 0；0=全部")
     ap.add_argument("--offset", default="", help="每关节零位偏置(rad)，逗号分隔")
@@ -181,6 +186,15 @@ def main() -> int:
     ids = [int(x) for x in args.ids.split(",") if x.strip()]
     flips = {int(x) for x in args.flip.split(",") if x.strip()}
     sign = {i: (-1.0 if i in flips else 1.0) for i in ids}
+
+    # --direction：把硬件层的 direction 套到这里，让 RViz 和真机一致
+    if args.direction:
+        vals = [float(x) for x in args.direction.replace(",", " ").split()]
+        if len(vals) != N_JOINTS:
+            print(f"❌ --direction 需要 {N_JOINTS} 个值，实际 {len(vals)} 个")
+            return 2
+        for i in ids:
+            sign[i] *= vals[i - 1]
     offset = {}
     if args.offset:
         vals = [float(x) for x in args.offset.split(",")]
@@ -234,6 +248,15 @@ def main() -> int:
     if args.joint:
         print(f"  只镜像   : joint{args.joint}（其它固定 0）")
     print()
+    if not args.no_direction_hint:
+        if args.direction:
+            print("  本脚本已套用 --direction ⇒ RViz 应该和真机**完全同步**。")
+            print("  如果某个关节仍反着动 → 说明 direction 那一位配错了。")
+        else:
+            print("  ⚠️ 注意：本脚本发的是**电机原始角**，没有套 direction。")
+            print("     j2/j3 看起来反着动是**正常的**（电机 +q 与 URDF +q 反向）。")
+            print("     想验证 direction 配置，用： --direction \"+1,-1,-1,+1,+1,+1\"")
+        print()
     print("  ➜ 现在用手慢慢晃真机的任意一根 link，看 RViz 里的手臂：")
     print("      跟着动 → 该关节 direction = +1")
     print("      反着动 → 该关节 direction = −1（用 --flip 取反再确认）")

@@ -13,6 +13,7 @@
   <depend>hardware_interface</depend>
   <depend>pluginlib</depend>
   <depend>openarm_can</depend>
+  <depend>hw_arm_algorithms</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

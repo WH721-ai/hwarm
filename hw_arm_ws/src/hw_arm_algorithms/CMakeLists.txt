@@ -52,6 +52,11 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
 # 库的名字里带命名空间前缀，避免与其它包的 target 冲突
 add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
 
+# hw_arm_hardware 是**共享库**插件，它链接本静态库做重力补偿（C-04），
+# 所以这里必须编成位置无关代码，否则链接时报
+#   relocation R_X86_64_PC32 ... can not be used when making a shared object
+set_target_properties(${PROJECT_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # ─────────────────────────────────────────────────────────────
 # 头文件安装
 # ─────────────────────────────────────────────────────────────

@@ -25,6 +25,11 @@
 #include "rclcpp/macros.hpp"
 #include "rclcpp_lifecycle/state.hpp"
 
+// 重力补偿（C-04）—— 算法来自 hw_arm_algorithms，这里只做调用
+#include "hw_arm_algorithms/data.hpp"
+#include "hw_arm_algorithms/gravity.hpp"
+#include "hw_arm_algorithms/model.hpp"
+
 namespace hw_arm_hardware {
 
 class HwArmHW : public hardware_interface::SystemInterface {
@@ -106,6 +111,26 @@ class HwArmHW : public hardware_interface::SystemInterface {
   // 力/力矩同号处理：MIT 的 tau_ff 也要乘 direction。
   // 增益 kp/kd 不乘 —— 它们是正定的，与方向无关。
   std::vector<double> direction_ = {+1.0, -1.0, -1.0, +1.0, +1.0, +1.0};
+
+  // ── 重力补偿（待办 C-04）
+  //
+  // tau_ff = gravity_scale * computeGravity(q_actual)
+  //
+  // 三个开关，默认**全关**，保证不改变现有行为：
+  //   gravity_compensation : 总开关（默认 false）
+  //   gravity_dry_run      : 只算不执行，把期望力矩打到日志（默认 true）
+  //   gravity_scale        : 0.0 ~ 1.5，先 0.3 → 0.6 → 1.0 慢慢加
+  //
+  // 为什么默认 dry-run：重力补偿方向/幅值一旦错了，机械臂会**主动往下压**，
+  // 比不补偿更危险。先看数字对不对，再真正施加。
+  bool gravity_comp_ = false;
+  bool gravity_dry_run_ = true;
+  double gravity_scale_ = 1.0;
+  std::string urdf_file_;    // 为空则在 on_init 里按 ament index 找默认路径
+
+  std::unique_ptr<hw_arm_algorithms::RobotModel> model_;
+  std::unique_ptr<hw_arm_algorithms::RobotWorkspace> ws_;
+  std::vector<double> gravity_tau_;   // 最近一次算出的 g(q)，方便日志/调试
   // direction 参数写成 " +1 -1 -1 +1 +1 +1 " 时的缓存（懒解析）
   std::vector<std::string> direction_vec_;
 

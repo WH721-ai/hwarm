@@ -3,6 +3,10 @@
 
 #include "hw_arm_hardware/hw_arm_hardware.hpp"
 
+#include <ament_index_cpp/get_package_share_directory.hpp>
+
+#include <Eigen/Core>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -291,6 +295,64 @@ bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
     }
   }
 
+  // ── 重力补偿（C-04）
+  if (!get("gravity_compensation").empty())
+    gravity_comp_ = to_bool(get("gravity_compensation"), false);
+  if (!get("gravity_dry_run").empty())
+    gravity_dry_run_ = to_bool(get("gravity_dry_run"), true);
+  if (!get("gravity_scale").empty()) {
+    double v = 1.0;
+    if (!parse_double("gravity_scale", get("gravity_scale"), v)) return false;
+    if (v < 0.0 || v > 1.5) {
+      RCLCPP_ERROR(logger(), "gravity_scale=%.3f 超出 [0, 1.5]", v);
+      return false;
+    }
+    gravity_scale_ = v;
+  }
+  if (!get("urdf_file").empty()) urdf_file_ = get("urdf_file");
+
+  if (gravity_comp_) {
+    // 默认路径：<share>/hw_arm_description/urdf/hw_arm.urdf（构建期生成）
+    if (urdf_file_.empty()) {
+      try {
+        urdf_file_ = ament_index_cpp::get_package_share_directory("hw_arm_description") +
+                     "/urdf/hw_arm.urdf";
+      } catch (const std::exception& e) {
+        RCLCPP_ERROR(logger(), "找不到 hw_arm_description 包: %s", e.what());
+        return false;
+      }
+    }
+    model_ = std::make_unique<hw_arm_algorithms::RobotModel>();
+    if (!model_->load(urdf_file_)) {
+      RCLCPP_ERROR(logger(), "加载 URDF 失败: %s", urdf_file_.c_str());
+      for (const auto& e : model_->validation().errors)
+        RCLCPP_ERROR(logger(), "  %s", e.c_str());
+      model_.reset();
+      return false;
+    }
+    for (const auto& w : model_->validation().warnings)
+      RCLCPP_WARN(logger(), "URDF 校验: %s", w.c_str());
+
+    ws_ = std::make_unique<hw_arm_algorithms::RobotWorkspace>(*model_);
+    gravity_tau_.assign(ARM_DOF, 0.0);
+
+    RCLCPP_INFO(logger(),
+                "重力补偿: 开（scale=%.2f, dry_run=%s）URDF=%s 总质量=%.4f kg",
+                gravity_scale_, gravity_dry_run_ ? "true" : "false",
+                urdf_file_.c_str(), model_->totalMass());
+    {
+      Eigen::VectorXd q = Eigen::VectorXd::Zero(model_->nq());
+      Eigen::VectorXd g(model_->nv());
+      hw_arm_algorithms::computeGravity(*model_, *ws_, q, g);
+      RCLCPP_INFO(logger(),
+                  "  g(q=0) = [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f] N·m"
+                  "（可用于核对期望值）",
+                  g[0], g[1], g[2], g[3], g[4], g[5]);
+    }
+  } else {
+    RCLCPP_INFO(logger(), "重力补偿: 关（tau_ff 只来自控制器）");
+  }
+
   RCLCPP_INFO(logger(),
               "配置: can=%s can_fd=%s require_all=%s return_to_zero=%s refresh_per_cycle=%d",
               can_interface_.c_str(), can_fd_ ? "true" : "false",
@@ -524,14 +586,40 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
   // 只给实际存在的电机发指令（顺序必须与 init_arm_motors 的注册顺序一致）
   std::vector<openarm::damiao_motor::MITParam> params;
   params.reserve(active_idx_.size());
+  // ── 重力补偿（C-04）：tau_ff = scale * g(q_actual)
+  //
+  // 用**实测关节角**而不是命令角：命令角在轨迹跟踪时超前，
+  // 用实测角算出来的重力矩才是此刻真正需要的补偿量。
+  const bool compute_gravity = gravity_comp_ && model_ && ws_;
+  const bool apply_gravity = compute_gravity && !gravity_dry_run_;
+  if (compute_gravity) {
+    Eigen::VectorXd q(static_cast<Eigen::Index>(ARM_DOF));
+    for (size_t i = 0; i < ARM_DOF; ++i) q[static_cast<Eigen::Index>(i)] = pos_states_[i];
+    Eigen::VectorXd g(model_->nv());
+    hw_arm_algorithms::computeGravity(*model_, *ws_, q, g);
+    for (size_t i = 0; i < ARM_DOF; ++i)
+      gravity_tau_[i] = gravity_scale_ * g[static_cast<Eigen::Index>(i)];
+
+    if (gravity_dry_run_) {
+      RCLCPP_INFO_THROTTLE(logger(), throttle_clock(), 1000,
+                           "[重力dry-run] g(q)=[%.3f %.3f %.3f %.3f %.3f %.3f] "
+                           "scale=%.2f → tau_ff=[%.3f %.3f %.3f %.3f %.3f %.3f]",
+                           g[0], g[1], g[2], g[3], g[4], g[5], gravity_scale_,
+                           gravity_tau_[0], gravity_tau_[1], gravity_tau_[2],
+                           gravity_tau_[3], gravity_tau_[4], gravity_tau_[5]);
+    }
+  }
+
   for (size_t j : active_idx_) {
     // 关节坐标系 → 电机坐标系（C-02）
     // kp/kd 不乘 direction（增益是正定的）；位置/速度/力矩都要乘。
     const double d = direction_[j];
+    const double tau_cmd = tau_commands_[j] +
+                           (apply_gravity ? gravity_tau_[j] : 0.0);
     params.push_back({kp_[j], kd_[j],
                       d * pos_commands_[j],
                       d * vel_commands_[j],
-                      d * tau_commands_[j]});
+                      d * tau_cmd});
   }
   openarm_->get_arm().mit_control_all(params);
   openarm_->recv_all(100);

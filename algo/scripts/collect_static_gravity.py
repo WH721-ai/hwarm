@@ -122,11 +122,24 @@ def uint_to_float(u: int, lo: float, hi: float, bits: int) -> float:
 #   加上 tau_ff = g(q0) 之后，力矩一开始就是对的，机械臂几乎不动。
 #   而且辨识时测到的仍然是**总力矩**（tau_ff + kp·误差），
 #   所以前馈不会污染辨识结果 —— 模型不准的部分由 PD 自动补上。
-_URDF_CANDIDATES = [
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                 "hw_arm_ws", "install", "hw_arm_description", "share",
-                 "hw_arm_description", "urdf", "hw_arm.urdf"),
-]
+def _urdf_candidates() -> list[str]:
+    """按可能性列出 hw_arm.urdf 的候选路径。
+
+    ⚠️ 之前只写了一条相对路径，而且层级算错了（少上溯一级），
+       结果永远找不到 URDF → 重力前馈全 0 → 机械臂下垂。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))          # .../algo/scripts
+    roots = [
+        os.path.dirname(os.path.dirname(here)),                # .../hw_arm
+        os.path.dirname(os.path.dirname(os.path.dirname(here))),
+        os.getcwd(),
+        os.path.expanduser("~/hw_arm"),
+    ]
+    out = []
+    for r in roots:
+        out.append(os.path.join(r, "hw_arm_ws", "install", "hw_arm_description",
+                                "share", "hw_arm_description", "urdf", "hw_arm.urdf"))
+    return out
 
 
 def load_gravity_model(urdf: str | None = None):
@@ -139,12 +152,14 @@ def load_gravity_model(urdf: str | None = None):
         return None, None
     path = urdf
     if path is None:
-        for c in _URDF_CANDIDATES:
+        for c in _urdf_candidates():
             if os.path.isfile(c):
                 path = c
                 break
     if path is None or not os.path.isfile(path):
-        print("  ⚠️ 找不到 URDF，将退化为纯位置环")
+        print("  ⚠️ 找不到 hw_arm.urdf，将退化为纯位置环（机械臂会下垂）")
+        for c in _urdf_candidates():
+            print(f"     试过: {c}")
         return None, None
     model = pin.buildModelFromUrdf(path)
     print(f"  ✅ 重力前馈模型: {path}")

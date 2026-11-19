@@ -97,7 +97,8 @@ class HwArmHW : public hardware_interface::SystemInterface {
   // 两边**各自都满足右手定则**，差的只是"两个轴的指向关系"，只能实测。
   //
   // 实测方法见 scripts/mirror_check.py（实时镜像：手拖真机，看 RViz 跟不跟）。
-  // 2026-11-15 在真机上测得：只有 joint2 / joint3 反向。
+  // 2026-11-15 真机实测：只有 joint2 / joint3 反向。
+  // 同日 joint5/joint6 的电机固件 ID 交换后**重测确认**：j5/j6 均为 +1（见 C-02）。
   //
   // 映射关系（direction[i] = +1 或 -1）：
   //   read()  : joint_pos[i] = direction[i] * motor_pos[i]

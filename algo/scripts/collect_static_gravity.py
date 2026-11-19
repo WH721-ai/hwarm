@@ -298,7 +298,8 @@ def joint_frame(bus: ArmBus, ids: list[int]):
 
 def acquire_one(bus: ArmBus, ids: list[int], kp: float, kd: float,
                 settle_s: float, sample_s: float,
-                grav_model=None, grav_data=None, quiet: float = 0.02):
+                grav_model=None, grav_data=None, verbose: bool = False,
+                quiet: float = 0.02):
     """在当前姿态使能 → 等稳定 → 采样 → 失能。
 
     返回 (q, tau, dq_max)：
@@ -322,6 +323,14 @@ def acquire_one(bus: ArmBus, ids: list[int], kp: float, kd: float,
     cmd = {i: (kp, kd, DIRECTION[i - 1] * q0[k], 0.0,
                DIRECTION[i - 1] * tau_ff_joint[k])
            for k, i in enumerate(ids)}
+
+    if verbose:
+        print("     ── 诊断 ──")
+        print(f"       读到 q0(关节系,度)   = {np.round(np.degrees(q0), 2)}")
+        print(f"       下发目标(电机系,度) = "
+              f"{np.round(np.degrees([cmd[i][2] for i in ids]), 2)}")
+        print(f"       重力前馈(电机系,N·m)= "
+              f"{np.round([cmd[i][4] for i in ids], 3)}")
 
     # ⚠️ 不要做 kp 软启动！目标本来就是当前位置，没有位置阶跃；
     #    软启动只会让力矩在最初几百毫秒接近 0 → 重力下自由落体。
@@ -347,10 +356,17 @@ def acquire_one(bus: ArmBus, ids: list[int], kp: float, kd: float,
         time.sleep(0.002)
 
     # ① 稳定阶段：让 PD 收敛（会有轻微下沉，这是正常的）
-    t_end = time.monotonic() + settle_s
+    t_start = time.monotonic()
+    marks = [0.05, 0.15, 0.35, 0.8] if verbose else []
+    t_end = t_start + settle_s
     while time.monotonic() < t_end:
         bus.mit(cmd)
         bus.poll()
+        if verbose and marks and (time.monotonic() - t_start) >= marks[0]:
+            marks.pop(0)
+            q_now, _, _ = joint_frame(bus, ids)
+            print(f"       t={time.monotonic()-t_start:4.2f}s  "
+                  f"实测(度)={np.round(np.degrees(q_now), 2)}")
         time.sleep(0.002)
 
     # ② 采样阶段：取中位数，抗单帧噪声
@@ -390,6 +406,8 @@ def main() -> int:
     ap.add_argument("--auto-step", type=float, default=5.0,
                     help="auto 模式每次每关节随机偏转的最大角度（度）")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--verbose", "-v", action="store_true",
+                    help="打印诊断：读到的 q0、下发的目标、重力前馈、稳定过程")
     ap.add_argument("--urdf", default=None,
                     help="重力前馈用的 URDF（默认用安装好的 hw_arm.urdf）")
     args = ap.parse_args()
@@ -489,7 +507,7 @@ def main() -> int:
 
             res = acquire_one(bus, ids, args.kp, args.kd,
                               args.settle, args.hold,
-                              grav_model, grav_data)
+                              grav_model, grav_data, verbose=args.verbose)
             if res is None:
                 print("     ⚠️ 采样失败（帧太少），跳过")
                 continue

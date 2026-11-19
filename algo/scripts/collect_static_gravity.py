@@ -330,6 +330,40 @@ def main() -> int:
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "data", f"static_gravity_{_dt.datetime.now():%Y%m%d_%H%M%S}.yaml")
 
+    # ── 启动自检：CAN 到底能不能发出去 ──
+    def tx_count():
+        try:
+            return int(open(f"/sys/class/net/{args.interface}/statistics/tx_packets").read())
+        except Exception:  # noqa: BLE001
+            return -1
+
+    _bus0 = ArmBus(args.interface, ids)
+    t0 = tx_count()
+    for _ in range(10):
+        _bus0.query()
+        time.sleep(0.01)
+    time.sleep(0.05)
+    t1 = tx_count()
+    _bus0.close()
+    if t0 >= 0 and t1 == t0:
+        print("=" * 74)
+        print(f"  ❌ {args.interface} **发不出帧**（tx_packets 一直停在 {t0}）")
+        print("=" * 74)
+        print("  这是 USB-CAN 适配器的发送队列卡死，不是电机的问题。")
+        print("  脚本已自动**拒绝使能**（不会让机械臂动）。")
+        print()
+        print("  修复（需要密码）：")
+        print(f"    sudo ip link set {args.interface} down")
+        print(f"    sudo ip link set {args.interface} up")
+        print(f"    ip -br link show {args.interface}      # 确认 UP")
+        print()
+        print("  如果还不行：拔掉 USB-CAN 适配器 3 秒再插回去，然后重新配置：")
+        print(f"    sudo ip link set {args.interface} type can bitrate 1000000 "
+              f"sample-point 0.75 restart-ms 0 fd off")
+        print(f"    sudo ip link set {args.interface} txqueuelen 1000")
+        print(f"    sudo ip link set {args.interface} up")
+        return 3
+
     bus = ArmBus(args.interface, ids)
 
     print("=" * 74)

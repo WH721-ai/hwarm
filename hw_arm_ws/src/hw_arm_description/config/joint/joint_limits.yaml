@@ -1,40 +1,61 @@
 # 关节限位（能转多少）
 #
-# 来自旧版 joints.yaml 的 limit；effort 单位 N·m，velocity 单位 rad/s。
-# 由 scripts/migrate_to_openarm_layout.py 从旧版 config/{joints,links}.yaml 生成
+# 2026-11-20 按**真机手动标定**更新（scripts/calibrate_limits.py）：
+#   把每个关节用手推到两端，记录编码器读数（已乘 direction，关节坐标系）。
+#   effort / velocity 保持不变。
+#
+#   joint        下限        上限      行程      说明
+#   joint1     -π          +π        360.0°   连转关节，实测 364.7°，按 360° 处理
+#   joint2     -0.0017     +3.1034   177.9°   实测（CAD 说 200°，真机到不了）
+#   joint3     +0.0105     +3.0364   173.4°   实测（CAD 说 140°，真机更宽）
+#   joint4     -3.3522     +0.5262   222.2°   实测（上限只到 +30°）
+#   joint5     -1.2037     +1.1896   137.1°   实测（CAD 说 ±45°）
+#   joint6     -π          +π        360.0°   连转关节，实测 330.5°，按 360° 处理
+#
+# ⚠️ 除 joint1/joint6 外，其余各轴在实测值上各加了 **2° 余量**：
+#    实测端点是"推到推不动"的位置，重复测量有 ±1° 误差；
+#    而且标定时 joint2/joint3 的静止位比标定下限还低 0.3~0.9°，
+#    说明端点没真正压到硬限位。加 2° 后保证 0°（home）一定在范围内。
+#
+# ⚠️ joint1 / joint6 是**连转**关节。这里用 ±π 而不是 URDF 的 continuous，
+#    因为 continuous 在 Pinocchio 里会变成 nq=2（cos/sin 两维），
+#    整个 6 自由度假设都会崩掉（算法、硬件映射、MuJoCo 转换全部要改）。
+#
+# effort 单位 N·m，velocity 单位 rad/s。
+
 joint1:
   limit:
-    lower: -1.3963
-    upper: 3.4907
+    lower: -3.141593
+    upper: 3.141593
     effort: 40.0
     velocity: 16.755
 joint2:
   limit:
-    lower: -0.17453
-    upper: 3.3161
+    lower: -0.036607
+    upper: 3.138307
     effort: 40.0
     velocity: 16.755
 joint3:
   limit:
-    lower: 0.0
-    upper: 2.4435
+    lower: -0.024407
+    upper: 3.071307
     effort: 27.0
     velocity: 5.4454
 joint4:
   limit:
-    lower: -1.5708
-    upper: 1.5708
+    lower: -3.387107
+    upper: 0.561107
     effort: 7.0
     velocity: 20.944
 joint5:
   limit:
-    lower: -0.7854
-    upper: 0.7854
+    lower: -1.238607
+    upper: 1.224507
     effort: 7.0
     velocity: 20.944
 joint6:
   limit:
-    lower: -1.5708
-    upper: 1.5708
+    lower: -3.141593
+    upper: 3.141593
     effort: 7.0
     velocity: 20.944

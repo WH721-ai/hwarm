@@ -534,7 +534,15 @@ CallbackReturn HwArmHW::on_activate(const rclcpp_lifecycle::State& /*prev*/) {
   const auto& motors = openarm_->get_arm().get_motors();
   for (size_t k = 0; k < active_idx_.size() && k < motors.size(); ++k) {
     const size_t j = active_idx_[k];
-    const double q = motors[k].get_position();
+    // ⚠️ 这里必须和 read() 一样做「电机坐标系 → 关节坐标系」转换。
+    //    以前直接写 pos_states_[j] = get_position()（电机坐标），
+    //    而 read() 写的是 direction * get_position()（关节坐标）。
+    //    结果：joint2/joint3（direction=-1）激活时 pos_commands_ 是镜像值，
+    //    write() 再乘一次 direction，目标就变成了 -q_motor。
+    //    姿态接近零位时误差很小看不出来；一旦在大角度激活，
+    //    误差可达 2·|q|，kp=70 时就是上百 N·m —— "猛冲"的来源之一。
+    const double d = direction_[j];
+    const double q = d * motors[k].get_position();       // 关节坐标系
     const int err = motors[k].get_error_code();
     pos_states_[j] = q;
     // 关键安全措施：命令必须初始化为「当前实测位置」。

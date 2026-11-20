@@ -522,6 +522,12 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
         print(f"       q0    (度) = {np.round(np.degrees(q0), 2)}")
         print(f"       g_nom (N·m)= {np.round(g_nom, 3)}")
 
+    # 零位附近机械臂很可能压在桌面上 → 桌面分走重量，样本不可信
+    if abs(q0[1]) < np.radians(10) and abs(q0[2]) < np.radians(10):
+        print("       ⚠️ joint2/joint3 都接近 0° —— 零位时机械臂常常压在桌面上，"
+              "这类样本不可靠")
+        print("          建议把 joint2 抬到 20° 以上再采")
+
     # 每拍刷新的电机数（轮转）与循环周期
     #
     # 为什么要限速：gs_usb 适配器的可持续发送速率实测约 3000 fps，
@@ -734,6 +740,34 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
 
 
 # ══════════════════════════════════════════════════════════════
+def save_records(out: str, records: list, gm, args, ids) -> None:
+    """把已采到的样本写盘。
+
+    每采到一个姿态就调一次 —— 这样即使后面 USB 掉线 / 用户 Ctrl-C，
+    前面的数据也不会丢（实测踩过：18 号姿态时适配器重新枚举，
+    如果只在最后写盘，前 17 个就全没了）。
+    """
+    import yaml
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    tmp = out + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        yaml.safe_dump({
+            "meta": {
+                "created": _dt.datetime.now().isoformat(timespec="seconds"),
+                "interface": args.interface, "ids": ids,
+                "direction": DIRECTION, "kp": args.kp, "kd": args.kd,
+                "mode": args.mode, "n_poses": len(records),
+                "urdf": gm.path,
+                "note": "q/tau 均为关节坐标系；tau 是电机反馈的力矩"
+                        "（Kt×电流估算），静止时即外力矩=重力+摩擦，"
+                        "未做任何 PD 扣减。标称 g 一并存下便于对比。",
+            },
+            "samples": records,
+        }, f, allow_unicode=True, sort_keys=False)
+    os.replace(tmp, out)      # 原子替换，避免写一半断电得到坏文件
+
+
+# ══════════════════════════════════════════════════════════════
 # 主流程
 # ══════════════════════════════════════════════════════════════
 def main() -> int:
@@ -870,6 +904,7 @@ def main() -> int:
                       f"③ 别的东西在支撑它")
                 continue
             records.append(rec)
+            save_records(out, records, gm, args, ids)   # ★ 立刻落盘，掉线不丢
 
             print(f"     q(度)    = {np.round(np.degrees(rec['q']), 1)}")
             print(f"     tau实测  = {np.round(rec['tau'], 3)} N·m")
@@ -889,23 +924,7 @@ def main() -> int:
         print(f"\n❌ 只采到 {len(records)} 个有效姿态（至少 6 个）")
         return 2
 
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    import yaml
-    with open(out, "w", encoding="utf-8") as f:
-        yaml.safe_dump({
-            "meta": {
-                "created": _dt.datetime.now().isoformat(timespec="seconds"),
-                "interface": args.interface, "ids": ids,
-                "direction": DIRECTION, "kp": args.kp, "kd": args.kd,
-                "mode": args.mode, "n_poses": len(records),
-                "urdf": gm.path,
-                "note": "q/tau 均为关节坐标系；tau 是电机反馈的力矩"
-                        "（Kt×电流估算），静止时即外力矩=重力+摩擦，"
-                        "未做任何 PD 扣减。标称 g 一并存下便于对比。",
-            },
-            "samples": records,
-        }, f, allow_unicode=True, sort_keys=False)
-
+    save_records(out, records, gm, args, ids)
     print(f"\n✅ 采到 {len(records)} 个姿态 → {out}")
     if suspicious:
         print(f"   ⚠️ 其中 {suspicious} 个可能压在支撑上，拟合时注意")

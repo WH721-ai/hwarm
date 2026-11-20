@@ -111,7 +111,7 @@
                     ros2 launch hw_arm_bringup hw_arm.launch.py \
                         use_fake_hardware:=false controllers:=joint_state_broadcaster
                ⚠️ 第一次试之前扶着机械臂 —— 万一补偿方向错了它会掉下去 -->
-          <param name="zero_gravity">false</param>
+          <param name="zero_gravity">true</param>
           <param name="zero_gravity_kd">1.0</param>
           <!-- CAN ID 映射：joint1..joint6 各自用哪个电机发送 ID（接收自动 +0x10）
                默认就是 1..6，不需要写。

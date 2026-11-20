@@ -113,6 +113,47 @@ def main() -> int:
     worst = int(np.argmax(np.abs(d)))
     print(f"  下垂最大的关节：joint{worst+1}  {math.degrees(d[worst]):+.2f}°")
     print(f"  全部下垂的绝对值之和：{np.abs(np.degrees(d)).sum():.2f}°")
+    # ── 反推真实重力矩：g_true = kp × (q_des − q_actual) = −kp × 下垂 ──
+    # 这只在 gravity_scale = 0（纯 PD）时成立，但也可以用来核对模型。
+    try:
+        import os, yaml
+        here = os.path.dirname(os.path.abspath(__file__))
+        pkg = os.path.dirname(here)
+        gains = yaml.safe_load(open(os.path.join(pkg, "config", "control",
+                                                 "control_gains.yaml"), encoding="utf-8"))
+        kp = np.array([gains[f"joint{i}"]["kp"] for i in range(1, 7)])
+        urdf = os.path.join(os.path.dirname(pkg), "..", "install", "hw_arm_description",
+                            "share", "hw_arm_description", "urdf", "hw_arm.urdf")
+        urdf = os.path.normpath(urdf)
+        g_model = None
+        if os.path.isfile(urdf):
+            import pinocchio as pin
+            m = pin.buildModelFromUrdf(urdf)
+            dd = m.createData()
+            g_model = np.asarray(pin.rnea(m, dd, q_after, np.zeros(m.nv), np.zeros(m.nv)))
+
+        g_true = -kp * d          # d = 稳定后 − 使能瞬间，下垂时 d<0
+        print()
+        print("  反推真实重力矩（只在下垂不受补偿影响时才准）")
+        print(f"  {'关节':8s}{'kappa·下垂':>12s}{'模型 g':>11s}{'比值':>8s}   结论")
+        for i in range(6):
+            if abs(g_model[i]) < 0.05 and abs(g_true[i]) < 0.05:
+                continue
+            ratio = (g_true[i] / g_model[i]) if abs(g_model[i]) > 1e-6 else float("nan")
+            tag = ""
+            if abs(ratio - 1.0) < 0.10:
+                tag = "✅ 模型准（差 <10%）"
+            elif ratio > 1.0:
+                tag = f"❌ 模型偏小 {ratio:.2f} 倍"
+            else:
+                tag = f"❌ 模型偏大 {1/ratio:.2f} 倍"
+            print(f"  joint{i+1} {g_true[i]:11.3f}{g_model[i]:11.3f}{ratio:8.2f}   {tag}")
+        print()
+        print("  ⚠️ 这个反推假设 kp 准、且没有摩擦/其它外力，只能做量级判断。")
+        print("     要精确辨识请用 C-05：algo/scripts/collect_static_gravity.py")
+    except Exception as e:  # noqa: BLE001
+        print(f"  （反推重力矩失败：{e}）")
+
     print()
     print("  对比方法：改 gravity_scale（0 → 0.3 → 1.0）各跑一次，")
     print("            『下垂(°)』越小说明补偿越有效。")

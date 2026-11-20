@@ -17,10 +17,16 @@
     （实测估算 0.3 s 掉 68°）—— 这就是"一按回车就冲回去"的真正原因。
     → 用标称模型算 tau_ff = g(q0) 一起下发，机械臂几乎不动。
 
-为什么测到的力矩要"扣掉 PD 贡献"
-    电机报告的 tau 是**总输出** = tau_ff + kp·误差 + kd·速度 + 外力矩
-    所以：  外力矩 = tau_meas − tau_ff − kp·(q_des − q) − kd·(0 − dq)
-    扣掉后剩下的才是"重力 + 摩擦"，这才是要拟合的量。
+为什么不用"扣掉 PD 贡献"
+    电机反馈的 tau 是**Kt × 实测电流**估算出来的真实输出力矩，不是指令回显。
+    静止时力矩平衡：  tau_motor = tau_ext（重力 + 摩擦）
+    而 tau_motor = kp·(q_des − q) + kd·(0 − dq) + tau_ff
+    所以 **tau_ext 就等于反馈的 tau 本身**，任何"再扣一次 PD 贡献"的写法
+    都会把 kp·误差 算两遍，得到错误数据。
+
+    ⚠️ 但要注意 tau 里混入了：Kt 标称误差、减速器效率（都是**全局乘性**，
+       会被 gravity_scale 吸收）、电流零偏（每关节常值，被拟合的 bias 吸收）、
+       静摩擦（随姿态变号，留在残差里，构成精度下限）。
 
 为什么要把"压在支撑上"的样本挑出来
     机械臂靠在桌面上时，重力被结构吃掉，电机力矩接近 0 ——
@@ -91,6 +97,8 @@ LIMITS_Q = {   # 2026-11-20 真机标定的关节限位（见 hw_arm_description
 }
 
 BROADCAST_ID = 0x7FF
+MASTER_OFFSET = 0x10      # 电机回复用的 Master CAN ID = 发送 ID + 0x10（0x01..0x06 → 0x11..0x16）
+FAULT_LEVEL = 0x8         # 状态字段：0=失能 1=使能 >=8=故障
 
 
 # ══════════════════════════════════════════════════════════════
@@ -157,6 +165,7 @@ class ArmBus:
         self.err = {i: 0 for i in self.ids}
         self.t_mos = {i: 0 for i in self.ids}
         self.stamp = {i: 0.0 for i in self.ids}   # 收到该电机帧的 monotonic 时间
+        self.seq = {i: 0 for i in self.ids}       # 收到的**有效状态帧**计数（逐轴）
 
     # ── 发送 ──────────────────────────────────────────────────
     def _send(self, can_id: int, data: bytes) -> bool:
@@ -183,20 +192,67 @@ class ArmBus:
         for i in self.ids:
             self._send(i, b"\xff" * 7 + b"\xfc")
 
-    def disable(self):
-        for i in self.ids:
-            self._send(i, b"\xff" * 7 + b"\xfd")
-
-    def mit(self, kp: float, kd: float, q: dict, tau: dict) -> bool:
-        """q / tau 都是**电机坐标系**。dq_des 恒为 0。"""
+    def disable(self) -> bool:
+        """失能。返回是否**每一帧都发成功**（不代表电机已经停）。"""
         ok = True
         for i in self.ids:
-            p_max, _v, t_max = LIMITS[i]
+            ok = self._send(i, b"\xff" * 7 + b"\xfd") and ok
+        return ok
+
+    def disable_and_verify(self, tries: int = 3, timeout: float = 0.6) -> bool:
+        """反复发失能，并**回读状态**确认每台都真的 DISABLED。
+
+        DM 的状态字段：0=失能 1=使能 >=8=故障。
+        以前只发一次、且忽略发送失败 —— 发送队列满时脚本会以为停了、
+        实际电机仍在保持之前的控制力矩。必须回读确认。
+        """
+        sent_ok = False
+        for _ in range(max(1, tries)):
+            sent_ok = self.disable() or sent_ok
+            time.sleep(0.05)
+
+        t_end = time.monotonic() + timeout
+        while time.monotonic() < t_end:
+            self.query()
+            self.poll()
+            if all(self.stamp[i] > 0 and self.err[i] == 0 for i in self.ids):
+                return True
+            time.sleep(0.01)
+        return False
+
+    def bus_health(self, max_age: float = 0.05) -> str | None:
+        """返回故障描述；一切正常返回 None。
+
+        逐轴检查三件事：收到过帧、帧足够新、状态字不是故障。
+        """
+        now = time.monotonic()
+        never = [i for i in self.ids if self.stamp[i] == 0.0]
+        if never:
+            return f"从未收到状态帧: {never}"
+        stale = [i for i in self.ids if now - self.stamp[i] > max_age]
+        if stale:
+            age = {i: round(now - self.stamp[i], 3) for i in stale}
+            return f"反馈超时(>{max_age * 1000:.0f}ms): {age}"
+        fault = [i for i in self.ids if self.err[i] >= FAULT_LEVEL]
+        if fault:
+            return f"电机故障: { {i: hex(self.err[i]) for i in fault} }"
+        return None
+
+    def mit(self, kp: float, kd: float, q: dict, tau: dict) -> bool:
+        """q / tau 都是**电机坐标系**。dq_des 恒为 0（语义上是零速）。"""
+        ok = True
+        for i in self.ids:
+            p_max, v_max, t_max = LIMITS[i]
             q_u = f2u(q[i], -p_max, p_max, 16)
             kp_u = f2u(kp, 0.0, 500.0, 12)
             kd_u = f2u(kd, 0.0, 5.0, 12)
             tau_u = f2u(tau[i], -t_max, t_max, 12)
-            dq_u = 0
+            # ⚠️ P0：MIT 协议的每个字段都是**偏移编码**，字段值 0 表示区间下限。
+            #    所以 dq_u = 0 编出去的是 **-v_max**（j2 就是 -40 rad/s），
+            #    电机内部 kd·(dq_des − dq) 于是变成 kd·(−v_max)：
+            #        kd=1.5 时 j1 −37.5 / j2 −60 / j3 −15 / j4~6 −45 N·m
+            #    这是"猛推"的来源，必须按偏移编码写 0，12 bit 下 = 2047。
+            dq_u = f2u(0.0, -v_max, v_max, 12)
             data = bytes([
                 (q_u >> 8) & 0xFF, q_u & 0xFF,
                 (dq_u >> 4) & 0xFF, ((dq_u & 0x0F) << 4) | ((kp_u >> 8) & 0x0F),
@@ -217,12 +273,30 @@ class ArmBus:
                 break
             if len(raw) < 16:
                 continue
-            _cid, dlc = struct.unpack_from("<IB", raw, 0)
-            d = raw[8:8 + dlc]
-            if len(d) < 8:
+            cid, dlc = struct.unpack_from("<IB", raw, 0)
+            # SocketCAN 的错误帧带 CAN_ERR_FLAG，标准帧 ID 只占低 11 位
+            if cid & 0x20000000:                       # CAN_ERR_FLAG
+                self.other += 1
                 continue
+            cid &= 0x7FF
+            d = raw[8:8 + dlc]
+            if dlc != 8 or len(d) < 8:                 # DM 状态帧固定 8 字节
+                self.other += 1
+                continue
+            # ⚠️ 只认 Master CAN ID = 发送 ID + 0x10 的帧
+            #
+            #    以前只按 d[0] & 0x0F 匹配，而 SocketCAN 默认开了 loopback：
+            #      · 广播查询帧  0x7FF + [0x01,0x00,0xCC,0x00] → mid=1 被当成状态帧
+            #        （实测过：joint1 显示 master=0x7FF / q=-12.42 / 温度 0）
+            #      · MIT 指令帧  CAN ID=0x01..0x06，d[0]=(q_u>>8)&0xFF，
+            #        低四位落在 1..6 就有 6/16 概率被误收，还可能记到别的电机头上
+            #    后果：fresh() 被击穿（没有电机回也能"新鲜"）、
+            #          静止判据失效、采样数据被污染。
             mid = d[0] & 0x0F
             if mid not in LIMITS or mid not in self.ids:
+                self.other += 1
+                continue
+            if cid != mid + MASTER_OFFSET:
                 self.other += 1
                 continue
             p_max, v_max, t_max = LIMITS[mid]
@@ -232,6 +306,7 @@ class ArmBus:
             self.err[mid] = d[0] >> 4
             self.t_mos[mid] = d[6]
             self.stamp[mid] = time.monotonic()
+            self.seq[mid] += 1
             n += 1
         return n
 
@@ -295,7 +370,20 @@ class GravityModel:
 def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
             kp: float, kd: float, dq_tol: float, settle_timeout: float,
             sample_s: float, verbose: bool) -> dict | None:
-    """当前姿态使能 → 稳到真正静止 → 采样 → 失能。返回一条样本或 None。"""
+    """当前姿态使能 → 稳到真正静止 → 采样 → 失能。返回一条样本或 None。
+
+    安全约束（本次新增）：
+      · 每一拍都必须**每台电机都有新状态帧**，否则立即中止
+      · 每轴状态帧超时、电机报故障、MIT 帧发送失败 → 立即中止
+      · 静止判据基于"有效帧数 + 时间窗内位置/速度都稳"，超时则**拒绝本次采集**
+      · 采样期间持续做同样的检查，任何一项不满足都丢弃样本
+      · 失能要回读确认，没有确认就明确报错
+    """
+    calm_frames = 25          # 需要连续多少个"每轴都有新帧"的循环
+    settle_window_s = 0.20    # 位置稳定窗口
+    pos_tol = 0.01            # 窗口内位置漂移上限 (rad)
+    v_hard_limit = 5.0        # 紧急失能阈值 (rad/s)
+    min_valid_frames = 20     # 采样期每轴至少要有的有效帧数
 
     # ① 必须读到新鲜位置
     if not bus.fresh(timeout=1.0):
@@ -312,67 +400,137 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
         print(f"       q0    (度) = {np.round(np.degrees(q0), 2)}")
         print(f"       g_nom (N·m)= {np.round(g_nom, 3)}")
 
+    def step() -> str | None:
+        """发一帧 MIT + 收一帧状态，返回错误描述（None=正常）。"""
+        if not bus.mit(kp, kd, q_des, tau_ff):
+            return "MIT 帧发送失败（CAN 发送队列满？）"
+        bus.poll()
+        return bus.bus_health(max_age=0.05)
+
     # ③ 使能 + 立刻满 kp / 满前馈（**不做软启动**）
     bus.enable()
     for _ in range(5):
-        bus.mit(kp, kd, q_des, tau_ff)
+        err = step()
+        if err:
+            print(f"     ❌ 使能阶段异常：{err}")
+            bus.disable_and_verify()
+            return None
         time.sleep(0.002)
-    bus.poll()
+
+    settled = False
+    q_l, tau_l, dq_l = [], [], []
+    seen = dict(bus.seq)          # 每轴已收到的有效帧计数
 
     try:
-        # ④ 等真正静止
+        # ④ 等真正静止 —— 判据是**有效帧**，不是循环次数
         t_end = time.monotonic() + settle_timeout
         calm = 0
+        q_ref = None
+        t_win = None
         while time.monotonic() < t_end:
-            bus.mit(kp, kd, q_des, tau_ff)
-            bus.poll()
-            vmax = float(np.abs(bus.dq_joint()).max())
-            if vmax > 5.0:
+            n_before = dict(seen)
+            err = step()
+            if err:
+                print(f"     ❌ {err}，中止本次采集")
+                return None
+            new = {i: bus.seq[i] - n_before[i] for i in ids}
+            seen = dict(bus.seq)
+
+            dq = bus.dq_joint()
+            q_now = bus.q_joint()
+            vmax = float(np.abs(dq).max())
+            if vmax > v_hard_limit:
                 print(f"     ❌ 高速运动 |dq|max={vmax:.1f} rad/s，紧急失能")
                 return None
-            calm = calm + 1 if vmax < dq_tol else 0
-            if calm >= 25:                       # 连续 25 次 ≈ 50 ms
-                break
+
+            # 每一轴都必须在这一拍里给过新帧，否则不认为"静止"
+            if all(new[i] >= 1 for i in ids) and vmax < dq_tol:
+                if q_ref is None:
+                    q_ref, t_win, calm = q_now, time.monotonic(), 0
+                calm += 1
+                drift = float(np.abs(q_now - q_ref).max())
+                if drift > pos_tol:            # 位置在窗口内漂了，重新计时
+                    q_ref, t_win, calm = q_now, time.monotonic(), 0
+                elif (calm >= calm_frames
+                      and time.monotonic() - t_win >= settle_window_s):
+                    settled = True
+                    break
+            else:
+                q_ref, t_win, calm = None, None, 0
             time.sleep(0.002)
 
-        # ⑤ 采样
-        q_l, tau_l, dq_l = [], [], []
+        if not settled:
+            print(f"     ❌ {settle_timeout:.1f}s 内没有稳定下来"
+                  f"（calm={calm}，需要 {calm_frames} 帧 + "
+                  f"{settle_window_s * 1000:.0f}ms 窗口）→ 拒绝本次采集")
+            return None
+
+        # ⑤ 采样（期间持续做同样的安全检查）
         t_end = time.monotonic() + sample_s
         while time.monotonic() < t_end:
-            bus.mit(kp, kd, q_des, tau_ff)
-            bus.poll()
+            n_before = dict(seen)
+            err = step()
+            if err:
+                print(f"     ❌ 采样中异常：{err} → 丢弃本样本")
+                return None
+            new = {i: bus.seq[i] - n_before[i] for i in ids}
+            seen = dict(bus.seq)
+            if not all(new[i] >= 1 for i in ids):
+                print("     ❌ 采样中有电机没回帧 → 丢弃本样本")
+                return None
+
+            dq = bus.dq_joint()
+            if float(np.abs(dq).max()) > v_hard_limit:
+                print(f"     ❌ 采样中高速运动 {np.abs(dq).max():.1f} rad/s → 丢弃")
+                return None
+
             q_l.append(bus.q_joint())
             tau_l.append(bus.tau_joint())
-            dq_l.append(bus.dq_joint())
+            dq_l.append(dq)
             time.sleep(0.002)
     finally:
-        bus.disable()
-        time.sleep(0.10)
+        # ⑥ 停止：重发 + 回读确认。确认失败必须吼出来
+        if not bus.disable_and_verify():
+            print("     🚨🚨 失能**未确认**！电机可能仍在输出力矩，"
+                  "请立即断 CAN 电源或按急停！")
+        else:
+            time.sleep(0.05)
 
-    if len(q_l) < 10:
-        print("     ❌ 采样帧太少，跳过")
+    if len(q_l) < min_valid_frames:
+        print(f"     ❌ 采样有效帧太少（{len(q_l)} < {min_valid_frames}），跳过")
         return None
 
-    q = np.median(np.array(q_l), axis=0)
+    q_arr = np.array(q_l)
+    q = np.median(q_arr, axis=0)
     tau_raw = np.median(np.array(tau_l), axis=0)
     dq_max = float(np.abs(np.array(dq_l)).max())
+    pos_spread = float(np.abs(q_arr - q).max())
 
-    # ⑥ 静止时，电机反馈的力矩**就是**外力矩（重力 + 摩擦）
+    # 采样期还要够"静"：速度、位置散布都要小
+    if dq_max > dq_tol:
+        print(f"     ❌ 采样期 |dq|max={dq_max:.3f} > 容差 {dq_tol} → 丢弃")
+        return None
+    if pos_spread > pos_tol:
+        print(f"     ❌ 采样期位置散布 {pos_spread:.4f} rad > {pos_tol} → 丢弃")
+        return None
+
+    # ⑦ 静止时，电机反馈的力矩**就是**外力矩（重力 + 摩擦）
     #
     #    平衡条件： tau_motor = tau_ext
     #    而 tau_motor = kp·(q_des − q) + kd·(0 − dq) + tau_ff
     #                 = kp·perr + g_nom(q0)          （dq≈0）
     #    所以 tau_ext = tau_raw，**不需要再做任何加减**。
     #
-    #    ⚠️ 之前这里写成 tau_ext = tau_raw − g_nom + kp·perr，
-    #       等于把 kp·perr 算了两遍（一次在 tau_raw 里，一次又加回来），
-    #       数据是错的。已修正。
+    #    ⚠️ 前面那个版本写成 tau_ext = tau_raw − g_nom + kp·perr，
+    #       把 kp·perr 算了两遍，数据是错的。
     perr = q0 - q
     tau_ext = tau_raw                          # kd 项：dq≈0，忽略
 
     return dict(q=q.tolist(), tau=tau_ext.tolist(),
                 tau_raw=tau_raw.tolist(), g_nom=g_nom.tolist(),
-                dq_max=dq_max, sag_deg=float(np.degrees(np.abs(perr).max())))
+                dq_max=dq_max, pos_spread=pos_spread,
+                n_frames=len(q_l),
+                sag_deg=float(np.degrees(np.abs(perr).max())))
 
 
 # ══════════════════════════════════════════════════════════════
@@ -394,8 +552,13 @@ def main() -> int:
     ap.add_argument("--out", default=None)
     ap.add_argument("--dry-run", action="store_true",
                     help="只读不发控制帧，确认读数与模型")
+    ap.add_argument("--selftest", action="store_true",
+                    help="离线自检：验证速度编码与收包过滤（不需要电机）")
     ap.add_argument("--verbose", "-v", action="store_true")
     args = ap.parse_args()
+
+    if args.selftest:
+        return selftest()
 
     ids = [int(x) for x in args.ids.split(",") if x.strip()]
     out = args.out or os.path.join(
@@ -509,7 +672,9 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\n  中断")
     finally:
-        bus.disable()
+        if not bus.disable_and_verify():
+            print("\n  🚨🚨 失能**未确认**！电机可能仍在输出力矩，"
+                  "请立即断电或按急停！")
         time.sleep(0.2)
         bus.close()
 
@@ -527,8 +692,9 @@ def main() -> int:
                 "direction": DIRECTION, "kp": args.kp, "kd": args.kd,
                 "mode": args.mode, "n_poses": len(records),
                 "urdf": gm.path,
-                "note": "q/tau 均为关节坐标系；tau 已扣掉 PD 贡献，"
-                        "只剩重力+摩擦。标称 g 一并存下便于对比。",
+                "note": "q/tau 均为关节坐标系；tau 是电机反馈的力矩"
+                        "（Kt×电流估算），静止时即外力矩=重力+摩擦，"
+                        "未做任何 PD 扣减。标称 g 一并存下便于对比。",
             },
             "samples": records,
         }, f, allow_unicode=True, sort_keys=False)
@@ -537,6 +703,100 @@ def main() -> int:
     if suspicious:
         print(f"   ⚠️ 其中 {suspicious} 个可能压在支撑上，拟合时注意")
     print(f"   下一步： python3 algo/scripts/fit_static_gravity.py {out}")
+    return 0
+
+
+def selftest() -> int:
+    """离线自检：不需要电机、不需要 CAN 接口。
+
+    验证两件事：
+      ① MIT 帧里 dq_des 解码回来必须是 ≈0（P0 那个 bug 的回归测试）
+      ② poll() 必须丢掉 SocketCAN 回环帧（广播查询 / MIT 指令回显），
+         只接受 Master CAN ID 的状态帧
+    """
+    print("=" * 72)
+    print("  离线自检")
+    print("=" * 72)
+    fail = 0
+
+    class _FakeSock:
+        def __init__(self, frames=None):
+            self.frames = list(frames or [])
+            self.sent = []
+
+        def recv(self, n):
+            if not self.frames:
+                raise BlockingIOError
+            return self.frames.pop(0)
+
+        def send(self, b):
+            self.sent.append(b)
+            return len(b)
+
+    def new_bus(frames=None):
+        b = ArmBus.__new__(ArmBus)
+        b.ids = list(range(1, 7))
+        b.sock = _FakeSock(frames)
+        b.dropped = 0
+        b.other = 0
+        b.reset_state()
+        return b
+
+    # ── ① 速度编码：直接测 mit() 真正发出的字节 ──
+    print("\n① MIT 速度字段编码（解析 mit() 实际发出的帧）")
+    kp_t, kd_t = 40.0, 1.5
+    q_t = {i: 0.0 for i in range(1, 7)}
+    tau_t = {i: 0.0 for i in range(1, 7)}
+    bus = new_bus()
+    assert bus.mit(kp_t, kd_t, q_t, tau_t), "mit() 发送失败"
+    frames = {}
+    for raw in bus.sock.sent:
+        cid = struct.unpack_from("<I", raw, 0)[0] & 0x7FF
+        frames[cid] = raw[8:16]
+
+    print(f"  {'关节':8s}{'v_max':>7s}{'dq_u':>7s}{'解码 dq_des':>13s}"
+          f"{'kd·该项(N·m)':>14s}{'判定':>6s}")
+    for i in range(1, 7):
+        _p, v_max, _t = LIMITS[i]
+        d = frames[i]
+        dq_u = (d[2] << 4) | (d[3] >> 4)
+        back = u2f(dq_u, -v_max, v_max, 12)
+        ok = abs(back) <= 2 * v_max / 4095 + 1e-9
+        fail += 0 if ok else 1
+        print(f"  joint{i} {v_max:6.1f}{dq_u:7d}{back:12.4f}"
+              f"{kd_t * back:13.2f}{'✅' if ok else '❌':>6s}")
+    print("  （旧代码 dq_u 恒为 0 → 解码 -v_max → kd·该项 达 -37.5~-60 N·m）")
+
+    # ── ② 收包过滤 ──
+    print("\n② 收包过滤（模拟 SocketCAN 回环）")
+
+    def mk(can_id, data):
+        return struct.pack("<IB3x8s", can_id, 8, bytes(data).ljust(8, b"\x00"))
+
+    # 一条合法的 joint2 状态帧（Master 0x12）
+    good = [0x12, 0x80, 0x00, 0x7F, 0xF0, 0x00, 0x1A, 0x14]
+    cases = [
+        ("合法状态帧 0x12 (joint2)", mk(0x12, good), 2, True),
+        ("回环：广播查询 0x7FF", mk(0x7FF, [0x02, 0x00, 0xCC, 0x00]), 2, False),
+        ("回环：MIT 指令 0x02", mk(0x02, [0x80, 0x00, 0x7F, 0xF0, 0x00, 0x00, 0x00, 0x00]), 2, False),
+        ("别人的状态帧 0x13 (joint3)", mk(0x13, [0x13, 0x80, 0x00, 0x7F, 0xF0, 0x00, 0x1A, 0x14]), 2, False),
+        ("CAN 错误帧", mk(0x20000000 | 0x12, good), 2, False),
+        ("长度不对 (dlc=4)", struct.pack("<IB3x8s", 0x12, 4, bytes(good[:4]).ljust(8, b"\x00")), 2, False),
+    ]
+    print(f"  {'用例':30s}{'是否更新 joint2':>16s}{'期望':>8s}{'判定':>6s}")
+    for name, frame, jid, expect in cases:
+        bus = new_bus([frame])
+        bus.poll()
+        got = bus.seq[jid] > 0
+        ok = got == expect
+        fail += 0 if ok else 1
+        print(f"  {name:30s}{str(got):>16s}{str(expect):>8s}{'✅' if ok else '❌':>6s}")
+
+    print()
+    if fail:
+        print(f"  ❌ 自检失败 {fail} 项")
+        return 1
+    print("  ✅ 自检全部通过")
     return 0
 
 

@@ -154,6 +154,19 @@ class ArmBus:
         self.sock = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
         self.sock.bind((ifname,))
         self.sock.setblocking(False)
+        # ★ 让内核给每帧打**到达时间戳**。
+        #   以前用"处理这一帧时的 time.monotonic()"，等于把积压的旧报文
+        #   全部标成"刚刚到达"，fresh() 于是把零位旧反馈当成当前位置。
+        # Python 的 socket 模块在某些构建里没有导出 SO_TIMESTAMP，用 Linux 的常量 29
+        _SO_TIMESTAMP = getattr(socket, "SO_TIMESTAMP", 29)
+        try:
+            self.sock.setsockopt(socket.SOL_SOCKET, _SO_TIMESTAMP, 1)
+            self.has_kernel_ts = True
+        except OSError:
+            self.has_kernel_ts = False      # 退回处理时刻（会记录告警）
+        self._mono_offset = time.monotonic() - time.time()   # wall → monotonic
+        self.min_stamp = 0.0        # 只接受到达时间 >= 该值的帧
+        self.stale_dropped = 0      # 被时间戳挡掉的积压帧
         self.dropped = 0
         self.other = 0
         self.reset_state()
@@ -218,14 +231,36 @@ class ArmBus:
             sent_ok = self.disable() or sent_ok
             time.sleep(0.05)
 
+        # ⚠️ 不能用"最后已知状态"确认失能：原来判的是 stamp>0 且 err==0，
+        #    而 stamp 可能是上一次采集留下的旧值 —— 电机其实还在输出力矩，
+        #    脚本却报"已停止"。现在要求**发完失能请求之后新到达**的帧才算数。
+        self.drain()
+        self.min_stamp = time.monotonic()
+        before = dict(self.seq)
         t_end = time.monotonic() + timeout
         while time.monotonic() < t_end:
             self.query()
             self.poll()
-            if all(self.stamp[i] > 0 and self.err[i] == 0 for i in self.ids):
+            if all(self.seq[i] > before[i] and self.err[i] == 0 for i in self.ids):
                 return True
             time.sleep(0.01)
         return False
+
+    def bus_is_quiet(self, ms: float = 200.0) -> int:
+        """不发任何帧，监听 ms 毫秒，返回收到的帧数。
+
+        我们不发时电机不会主动上报，所以**只要收到帧，就说明总线上还有
+        另一个主站**（另一个 ros2_control、调试工具、或残留进程）。
+        两个主站同时发 MIT 会互相打架，必须拒绝使能。
+        """
+        self.drain()
+        n = 0
+        t_end = time.monotonic() + ms / 1000.0
+        while time.monotonic() < t_end:
+            if self._recv_one() is not None:
+                n += 1
+            time.sleep(0.002)
+        return n
 
     def bus_health(self, max_age: float = 0.05) -> str | None:
         """返回故障描述；一切正常返回 None。
@@ -271,13 +306,44 @@ class ArmBus:
         return ok
 
     # ── 接收 ──────────────────────────────────────────────────
+    def _recv_one(self):
+        """收一帧，返回 (data, 到达时刻 monotonic)；没数据返回 None。"""
+        try:
+            raw, ancdata, _flags, _addr = self.sock.recvmsg(
+                16, socket.CMSG_SPACE(16))
+        except (BlockingIOError, TimeoutError):
+            return None
+        t_arr = None
+        for level, ctype, cdata in ancdata:
+            if level == socket.SOL_SOCKET and \
+                    ctype == getattr(socket, "SCM_TIMESTAMP", 29):
+                sec, usec = struct.unpack("ll", cdata[:16])
+                t_arr = sec + usec * 1e-6 + self._mono_offset
+        if t_arr is None:
+            t_arr = time.monotonic()
+        return raw, t_arr
+
+    def drain(self) -> int:
+        """把接收队列里的积压全部丢掉，**不更新任何状态**。"""
+        old, self.min_stamp = self.min_stamp, float("inf")
+        n = 0
+        try:
+            while self._recv_one() is not None:
+                n += 1
+        finally:
+            self.min_stamp = old
+        return n
+
     def poll(self) -> int:
         n = 0
         while True:
-            try:
-                raw = self.sock.recv(16)
-            except (BlockingIOError, TimeoutError):
+            got = self._recv_one()
+            if got is None:
                 break
+            raw, t_arr = got
+            if t_arr < self.min_stamp:     # 是请求之前就积压的旧帧，丢掉
+                self.stale_dropped += 1
+                continue
             if len(raw) < 16:
                 continue
             cid, dlc = struct.unpack_from("<IB", raw, 0)
@@ -312,15 +378,24 @@ class ArmBus:
             self.tau[mid] = u2f(((d[4] & 0x0F) << 8) | d[5], -t_max, t_max, 12)
             self.err[mid] = d[0] >> 4
             self.t_mos[mid] = d[6]
-            self.stamp[mid] = time.monotonic()
+            self.stamp[mid] = t_arr          # 内核到达时间，不是处理时间
             self.seq[mid] += 1
             n += 1
         return n
 
     # ── 新鲜读数 ──────────────────────────────────────────────
     def fresh(self, timeout: float = 1.0, max_age: float = 0.03) -> bool:
-        """持续查询，直到**每台电机**都在 max_age 秒内回过一帧。"""
+        """持续查询，直到每台电机都在 max_age 秒内**新到达**过一帧。
+
+        ⚠️ 必须先丢弃积压：SocketCAN 接收队列里可能躺着上一次采集留下的零位
+           报文（等用户摆姿态的那段时间一直在收）。以前 reset_state() 只清了
+           Python 字典、没清队列，poll() 又把"处理时刻"当时间戳，于是旧报文被
+           当成"刚到的新鲜位置" → q0 被定成零位 → kp=80 拿零位当目标 → 猛冲回零。
+           这条路径用**内核到达时间戳 + 请求前的积压丢弃**堵死。
+        """
+        self.drain()                       # 丢掉请求之前到达的所有帧
         self.reset_state()
+        self.min_stamp = time.monotonic()  # 之后只接受晚于此刻到达的帧
         t_end = time.monotonic() + timeout
         while time.monotonic() < t_end:
             self.query()
@@ -447,6 +522,36 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
             time.sleep(rest)
         return err
 
+    # ⑧ 使能前的最后核对（三道闸）
+    #
+    # ① 总线必须静默：我们不发时电机不会主动上报，
+    #    还有帧就说明有另一个主站在发指令（ros2_control / 调试工具 / 残留进程）。
+    n_quiet = bus.bus_is_quiet(200)
+    if n_quiet > 0:
+        print(f"     ❌ 总线上还有 {n_quiet} 帧在流动 —— 可能有另一个程序在控制电机，"
+              f"拒绝使能（先关掉 ros2_control / openarm-can-cli 等）")
+        return None
+
+    # ② 反馈必须是刚才这一轮新拿到的（fresh() 已经丢过积压）
+    err_h = bus.bus_health(max_age=0.05)
+    if err_h:
+        print(f"     ❌ 使能前反馈不新鲜：{err_h}")
+        return None
+
+    # ③ 逐轴核对：编码后的目标必须和**实测位置**一致
+    #    这条能挡住 direction / pMax 配错导致"目标其实是零位"的情况。
+    q_motor_now = {i: bus.q[i] for i in ids}
+    worst = 0.0
+    for k, i in enumerate(ids):
+        p_max, _v, _t = LIMITS[i]
+        back = u2f(f2u(q_des[i], -p_max, p_max, 16), -p_max, p_max, 16)
+        worst = max(worst, abs(back - q_motor_now[i]))
+    if worst > 0.02:            # 20 mrad ≈ 1.15°
+        print(f"     ❌ 目标位置与实测位置偏差 {worst:.4f} rad (>0.02)，拒绝使能")
+        return None
+    if verbose:
+        print(f"       目标核对通过（最大偏差 {worst*1000:.2f} mrad）")
+
     # ③ 使能 + 立刻满 kp / 满前馈（**不做软启动**）
     bus.enable()
     # 使能瞬间电机电流突变，偶尔会有几十毫秒的丢帧（实测会碰到）。
@@ -464,9 +569,17 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
                 return None
         else:
             t_fail_since = None
-            if _ == 2:      # 使能已稳定，提示松手
-                print("        ✅ 已使能 —— 现在松手（保持 1 秒不动）")
-                time.sleep(0.6)
+            # ★ 从第一帧起就做运动保护（不能等到 settle 阶段）
+            #   位置偏差或速度异常 → 立刻失能。这样即使目标算错，
+            #   机械臂也跑不了多远。
+            dev = float(np.abs(bus.q_joint() - q0).max())
+            vsp = float(np.abs(bus.dq_joint()).max())
+            if dev > 0.20 or vsp > 2.0:
+                print(f"     ❌ 使能后立刻偏离：|Δq|max={dev:.3f} rad, "
+                      f"|dq|max={vsp:.2f} rad/s → 立即失能")
+                return None
+            if _ == 2 and verbose:   # 只提示，不暂停收发
+                print("        ✅ 已使能 —— 现在松手")
 
     settled = False
     q_l, tau_l, dq_l = [], [], []
@@ -787,6 +900,12 @@ def selftest() -> int:
                 raise BlockingIOError
             return self.frames.pop(0)
 
+        def recvmsg(self, n, anc):      # 没有 cmsg → 回落 time.monotonic()
+            return self.frames.pop(0) if self.frames else (_ for _ in ()).throw(BlockingIOError), [], 0, None
+
+        def setsockopt(self, *a):
+            pass
+
         def send(self, b):
             self.sent.append(b)
             return len(b)
@@ -797,6 +916,9 @@ def selftest() -> int:
         b.sock = _FakeSock(frames)
         b.dropped = 0
         b.other = 0
+        b.stale_dropped = 0
+        b._mono_offset = time.monotonic() - time.time()
+        b.min_stamp = 0.0
         b.reset_state()
         return b
 
@@ -849,6 +971,68 @@ def selftest() -> int:
         ok = got == expect
         fail += 0 if ok else 1
         print(f"  {name:30s}{str(got):>16s}{str(expect):>8s}{'✅' if ok else '❌':>6s}")
+
+    # ── ③ 旧报文不能冒充新鲜位置（本次最重要的回归测试）──
+    print("\n③ 积压的旧报文会不会被当成当前位置")
+
+    class _TsFakeSock(_FakeSock):
+        """带内核时间戳的假 socket。"""
+        def __init__(self, frames, mono_offset):
+            super().__init__()
+            self.ts_frames = list(frames)
+            self.off = mono_offset
+
+        def recvmsg(self, n, anc):
+            if not self.ts_frames:
+                raise BlockingIOError
+            raw, t_mono = self.ts_frames.pop(0)
+            sec = int(t_mono - self.off)
+            usec = int(((t_mono - self.off) - sec) * 1e6)
+            return raw, [(socket.SOL_SOCKET, getattr(socket, "SCM_TIMESTAMP", 29),
+                          struct.pack("ll", sec, usec))], 0, None
+
+        def setsockopt(self, *a):
+            pass
+
+    off = time.monotonic() - time.time()
+
+    def zero_frame(i, t_mono):
+        q_u = int((0.0 + 12.5) / 25.0 * 65535)
+        return (mk(0x10 + i, [i, (q_u >> 8) & 0xFF, q_u & 0xFF, 0x7F, 0xF0, 0x00, 0x1A, 0x14]),
+                t_mono)
+
+    # 场景 A：队列里只有 10 秒前的旧零位帧 → fresh() 必须 False
+    b = ArmBus.__new__(ArmBus)
+    b.ids = list(range(1, 7))
+    b.dropped = b.stale_dropped = b.other = 0
+    b._mono_offset = off
+    b.min_stamp = 0.0
+    b.reset_state()
+    b.sock = _TsFakeSock([zero_frame(i, time.monotonic() - 10.0) for i in range(1, 7)], off)
+    got = b.fresh(timeout=0.25, max_age=0.05)
+    ok_a = got is False
+    fail += 0 if ok_a else 1
+    print(f"  只有 10 秒前的旧零位帧 → fresh()={got}  期望 False   "
+          f"{'✅' if ok_a else '❌'}")
+
+    # 场景 B：一次采集刚结束、队列里剩了旧帧，但紧接着有**新**帧 → 必须 True
+    b = ArmBus.__new__(ArmBus)
+    b.ids = list(range(1, 7))
+    b.dropped = b.stale_dropped = b.other = 0
+    b._mono_offset = off
+    b.min_stamp = 0.0
+    b.reset_state()
+    now = time.monotonic()
+    old = [zero_frame(i, now - 5.0) for i in range(1, 7)]
+    b.sock = _TsFakeSock(old, off)
+    b.drain()                       # 用户摆姿态后，程序会先清积压
+    b.min_stamp = time.monotonic()  # 之后到达的才算数
+    b.sock.ts_frames.extend(zero_frame(i, time.monotonic()) for i in range(1, 7))
+    b.poll()
+    ok_b = all(b.seq[i] > 0 for i in range(1, 7))
+    fail += 0 if ok_b else 1
+    print(f"  积压丢弃后到来的新帧     → 采到 {sum(b.seq.values())} 帧  期望 6   "
+          f"{'✅' if ok_b else '❌'}")
 
     print()
     if fail:

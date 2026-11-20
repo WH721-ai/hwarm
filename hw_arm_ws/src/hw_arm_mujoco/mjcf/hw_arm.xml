@@ -38,7 +38,7 @@
                 <geom name="link5_collision" pos="-0.09941 -0.236266 -0.0833716" quat="0.666928 0.703165 -0.169637 0.178854" type="mesh" conaffinity="0" rgba="0.62 0.32 0.42 1" mesh="link5"/>
                 <body name="link6" pos="0.085454 0.00967523 -0.021" quat="0.111506 -0.706371 0.0322421 -0.69826">
                   <inertial pos="-6.64094e-08 1.31019e-08 0.0170619" quat="0.777687 -6.78322e-06 -5.42108e-06 0.628652" mass="0.011" diaginertia="3.02675e-06 3.02466e-06 9.14404e-07"/>
-                  <joint name="joint6" range="-3.14159 3.14159" actuatorfrcrange="-7 7" armature="0.01" damping="0.05 0.05 0.05" frictionloss="0.1"/>
+                  <joint name="joint6" range="-6.28318 6.28318" actuatorfrcrange="-7 7" armature="0.01" damping="0.05 0.05 0.05" frictionloss="0.1"/>
                   <geom name="link6_collision" pos="-0.0157907 0.231581 -0.211359" quat="0.552685 -0.66219 -0.324235 -0.388477" type="mesh" conaffinity="0" rgba="0.45 0.45 0.45 1" mesh="link6"/>
                 </body>
               </body>

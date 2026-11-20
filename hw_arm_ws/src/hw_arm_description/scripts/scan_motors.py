@@ -138,6 +138,14 @@ def probe(bus: Bus, motor_id: int, wait: float = 0.25) -> dict | None:
     for can_id, data in frames:
         if len(data) < 8:
             continue
+        # ⚠️ SocketCAN 默认开了 loopback：**我们自己发出去的帧也会被收回来**。
+        #    广播查询帧（CAN ID 0x7FF，负载首字节正好是电机 ID）如果不排除，
+        #    会被误认成"某台电机回了 master=0x7FF / q=-12.42 / 温度 0"这种垃圾。
+        #    实测踩过：joint1 一度显示 master=0x7FF、q=-12.4222、Tmos=0。
+        #    电机应答的 CAN ID 是 master（0x11~0x16），我们的发送 ID 是 0x01~0x06，
+        #    所以「CAN ID < 0x10」的一律是我们自己发的，跳过。
+        if can_id == BROADCAST_ID or can_id < 0x10:
+            continue
         if (data[0] & 0x0F) != (motor_id & 0x0F):
             continue                                   # 不是这台回的
         q = uint_to_float((data[1] << 8) | data[2], -P_MAX, P_MAX, 16)

@@ -357,10 +357,18 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
     tau_raw = np.median(np.array(tau_l), axis=0)
     dq_max = float(np.abs(np.array(dq_l)).max())
 
-    # ⑥ 扣掉 PD 贡献 → 外力矩（重力 + 摩擦）
-    #    位置误差（关节系）= q_des_joint − q，其中 q_des_joint = q0
+    # ⑥ 静止时，电机反馈的力矩**就是**外力矩（重力 + 摩擦）
+    #
+    #    平衡条件： tau_motor = tau_ext
+    #    而 tau_motor = kp·(q_des − q) + kd·(0 − dq) + tau_ff
+    #                 = kp·perr + g_nom(q0)          （dq≈0）
+    #    所以 tau_ext = tau_raw，**不需要再做任何加减**。
+    #
+    #    ⚠️ 之前这里写成 tau_ext = tau_raw − g_nom + kp·perr，
+    #       等于把 kp·perr 算了两遍（一次在 tau_raw 里，一次又加回来），
+    #       数据是错的。已修正。
     perr = q0 - q
-    tau_ext = tau_raw - g_nom + kp * perr      # kd 项：dq≈0，忽略
+    tau_ext = tau_raw                          # kd 项：dq≈0，忽略
 
     return dict(q=q.tolist(), tau=tau_ext.tolist(),
                 tau_raw=tau_raw.tolist(), g_nom=g_nom.tolist(),

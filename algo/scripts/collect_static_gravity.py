@@ -864,7 +864,11 @@ def main() -> int:
             flag = ""
             if is_supported(rec):
                 suspicious += 1
-                flag = "  ⚠️ 可能压在支撑上（力矩远小于标称）"
+                print(f"     ⚠️ 这一条**没让电机扛重量**（实测力矩 < 标称的 40%）"
+                      f"—— 丢弃，不入库")
+                print(f"        常见原因：① 你还托着机械臂 ② 它压在桌子上 "
+                      f"③ 别的东西在支撑它")
+                continue
             records.append(rec)
 
             print(f"     q(度)    = {np.round(np.degrees(rec['q']), 1)}")
@@ -1075,10 +1079,18 @@ def selftest() -> int:
 
 
 def is_supported(rec: dict) -> bool:
-    """粗判：某关节标称重力矩 >1 N·m，但实测不到它的一半。"""
+    """粗判这一条样本"没让电机真的扛着重量"。
+
+    判据：某关节标称重力矩 >1 N·m，但实测不到它的 40%。
+
+    为什么是 40% 而不是 50%：
+      我们的标称模型本身偏大（实测约 0.6 倍），自由悬空时比值就在 0.5~0.68 之间，
+      用 0.5 会把正常样本误判成"被支撑"。
+      而**用手托着**时实测只有 0.19~0.31，40% 这条线能把两者分开。
+    """
     g = np.array(rec["g_nom"])
     tau = np.array(rec["tau"])
-    return any(abs(g[i]) > 1.0 and abs(tau[i]) < 0.5 * abs(g[i])
+    return any(abs(g[i]) > 1.0 and abs(tau[i]) < 0.40 * abs(g[i])
                for i in range(len(g)))
 
 

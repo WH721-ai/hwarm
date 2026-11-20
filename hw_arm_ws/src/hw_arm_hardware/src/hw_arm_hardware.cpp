@@ -309,8 +309,34 @@ bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
     }
     gravity_scale_ = v;
   }
+  if (!get("zero_gravity").empty())
+    zero_gravity_ = to_bool(get("zero_gravity"), false);
+  if (!get("zero_gravity_kd").empty()) {
+    double v = 1.0;
+    if (!parse_double("zero_gravity_kd", get("zero_gravity_kd"), v)) return false;
+    if (v < 0.0 || v > 5.0) {
+      RCLCPP_ERROR(logger(), "zero_gravity_kd=%.3f 超出 MIT 范围 [0, 5]", v);
+      return false;
+    }
+    zero_gravity_kd_ = v;
+  }
+  if (zero_gravity_) {
+    // 零重力必然要求真正施加重力前馈，忽略 dry_run
+    gravity_comp_ = true;
+    gravity_dry_run_ = false;
+    RCLCPP_WARN(logger(),
+                "★ 零重力（拖动示教）模式已开启：kp=0 / kd=%.2f / tau_ff=%.2f·g(q)",
+                zero_gravity_kd_, gravity_scale_);
+    RCLCPP_WARN(logger(),
+                "  机械臂会进入'失重'状态 —— 请扶着它，或确认它能自己站稳！");
+    RCLCPP_WARN(logger(),
+                "  此模式请只启动 joint_state_broadcaster，不要启动轨迹控制器");
+  }
   if (!get("urdf_file").empty()) urdf_file_ = get("urdf_file");
 
+  if (zero_gravity_) {
+    RCLCPP_INFO(logger(), "模式: **零重力拖动示教**（kp=0, kd=%.2f）", zero_gravity_kd_);
+  }
   if (gravity_comp_) {
     // 默认路径：<share>/hw_arm_description/urdf/hw_arm.urdf（构建期生成）
     if (urdf_file_.empty()) {
@@ -637,7 +663,10 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
     const double d = direction_[j];
     const double tau_cmd = tau_commands_[j] +
                            (apply_gravity ? gravity_tau_[j] : 0.0);
-    params.push_back({kp_[j], kd_[j],
+    // 零重力模式：kp 恒 0（位置命令失效），只留速度阻尼 + 重力前馈
+    const double kp_use = zero_gravity_ ? 0.0 : kp_[j];
+    const double kd_use = zero_gravity_ ? zero_gravity_kd_ : kd_[j];
+    params.push_back({kp_use, kd_use,
                       d * pos_commands_[j],
                       d * vel_commands_[j],
                       d * tau_cmd});

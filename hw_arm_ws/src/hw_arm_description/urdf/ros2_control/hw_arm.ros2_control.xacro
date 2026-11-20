@@ -98,7 +98,21 @@
                   方向错了会**主动往下压**，比不补偿更危险。 -->
           <param name="gravity_compensation">true</param>
           <param name="gravity_dry_run">false</param>
-          <param name="gravity_scale">0.3</param>
+          <param name="gravity_scale">1.0</param>
+
+          <!-- ══ 零重力（拖动示教）模式 ══
+               和上面的「重力补偿」是**两件不同的事**：
+                 重力补偿：kp 照常 70/70/60…  +  tau_ff = g(q)
+                           → 机械臂依然很"硬"，只是静态下垂变小
+                 零重力  ：kp = 0            +  tau_ff = g(q)  +  一点 kd
+                           → 机械臂"失重"，手能轻松推动，松手停在原地
+
+               ⚠️ 开启后位置命令失效，请只启动 joint_state_broadcaster：
+                    ros2 launch hw_arm_bringup hw_arm.launch.py \
+                        use_fake_hardware:=false controllers:=joint_state_broadcaster
+               ⚠️ 第一次试之前扶着机械臂 —— 万一补偿方向错了它会掉下去 -->
+          <param name="zero_gravity">false</param>
+          <param name="zero_gravity_kd">1.0</param>
           <!-- CAN ID 映射：joint1..joint6 各自用哪个电机发送 ID（接收自动 +0x10）
                默认就是 1..6，不需要写。
                2026-11-15：joint5/joint6 曾装反，**已用 change_id 把电机固件 ID

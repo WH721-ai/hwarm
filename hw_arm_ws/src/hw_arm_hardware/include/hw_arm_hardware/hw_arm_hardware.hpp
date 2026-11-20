@@ -125,6 +125,19 @@ class HwArmHW : public hardware_interface::SystemInterface {
   // 比不补偿更危险。先看数字对不对，再真正施加。
   bool motors_ready_ = false;   // on_activate 里确认能读到反馈后才为 true
 
+  // ── 零重力（拖动示教）模式
+  //
+  // 和「重力补偿」是**两件事**，容易混淆：
+  //   重力补偿：kp 照常（70/70/60…）+ tau_ff = g(q)
+  //             → 机械臂依然很"硬"，只是静态下垂变小
+  //   零重力  ：kp = 0 + tau_ff = g(q) + kd 一点阻尼
+  //             → 机械臂"失重"，用手可以轻松推动，松手停在原地
+  //
+  // 零重力模式下发 kp 恒为 0，位置命令不再起作用，
+  // 所以**不要同时启用 JTC**（用 controllers:=joint_state_broadcaster）。
+  bool zero_gravity_ = false;
+  double zero_gravity_kd_ = 1.0;   // 速度阻尼（0~5，MIT 协议范围）
+
   bool gravity_comp_ = false;
   bool gravity_dry_run_ = true;
   double gravity_scale_ = 1.0;

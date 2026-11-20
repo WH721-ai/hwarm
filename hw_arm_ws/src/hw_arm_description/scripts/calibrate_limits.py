@@ -185,9 +185,10 @@ def main() -> int:
         for j in targets:
             print("─" * 74)
             print(f"  joint{j}")
-            for which in ("负方向极限", "正方向极限"):
+            for which in ("一端", "另一端"):
                 try:
-                    input(f"    把 joint{j} 推到【{which}】并保持住，然后按回车…")
+                    hint = ("（哪一端都行）" if which == "一端" else "（和刚才相反的那一端）")
+                    input(f"    把 joint{j} 推到【{which}】{hint}，到底后保持住，按回车…")
                 except EOFError:
                     print("    （非交互终端，退出）")
                     rd.close()
@@ -196,7 +197,7 @@ def main() -> int:
                 if v is None:
                     print("    ⚠️ 读不到，跳过")
                     continue
-                measured.setdefault(j, {})[which] = v
+                measured.setdefault(j, []).append(v)
                 print(f"    → 记录 {v:+.4f} rad = {math.degrees(v):+.2f}°")
     except KeyboardInterrupt:
         print("\n  中断")
@@ -218,19 +219,28 @@ def main() -> int:
     print(f"  {'关节':6s}{'旧下限':>10s}{'新下限':>10s}{'旧上限':>10s}{'新上限':>10s}   变化")
     new_cfg = {}
     for j in sorted(measured):
-        lo = measured[j].get("负方向极限")
-        hi = measured[j].get("正方向极限")
+        vs = sorted(measured[j])
+        lo = vs[0] if vs else None
+        hi = vs[-1] if len(vs) > 1 else None
         old = old_cfg.get(f"joint{j}", {}).get("limit", {})
         olo, ohi = old.get("lower"), old.get("upper")
-        if lo is not None and hi is not None and lo > hi:
-            lo, hi = hi, lo
-            print(f"  ⚠️ joint{j} 两次读数反了（负方向比正方向大），已自动交换 ——"
-                  f" 检查 direction 是否是 +1")
+        # ── 行程合理性检查 ──
+        if lo is not None and hi is not None:
+            span = math.degrees(hi - lo)
+            cad_span = math.degrees(ohi - olo) if (olo is not None and ohi is not None) else None
+            if span > 400:
+                print(f"  ⚠️ joint{j} 行程 {span:.0f}° > 400° —— 可能是多圈，或该关节没有硬限位")
+            if cad_span is not None and span > cad_span * 1.5:
+                print(f"  ⚠️ joint{j} 行程 {span:.0f}° 比 CAD 的 {cad_span:.0f}° 大 50% 以上"
+                      f" —— 确认是**硬限位**还是**线缆绷住**，后者要留安全余量")
         d = []
         if lo is not None and olo is not None:
             d.append(f"下限 {math.degrees(lo - olo):+.1f}°")
         if hi is not None and ohi is not None:
             d.append(f"上限 {math.degrees(hi - ohi):+.1f}°")
+        if lo is not None and hi is not None:
+            print(f"      行程 {math.degrees(hi - lo):.1f}°"
+                  + (f"（CAD {math.degrees(ohi - olo):.1f}°）" if (olo is not None and ohi is not None) else ""))
         print(f"  joint{j} {('%10.4f' % olo) if olo is not None else '         —'}"
               f" {('%10.4f' % lo) if lo is not None else '         —'}"
               f" {('%10.4f' % ohi) if ohi is not None else '         —'}"

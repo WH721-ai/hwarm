@@ -110,6 +110,7 @@ if(BUILD_TESTING)
       OUTPUT  ${HW_ARM_TEST_URDF}
       COMMAND ${XACRO_EXECUTABLE} ${HW_ARM_URDF_XACRO}
               use_fake_hardware:=true
+              config_root:=${CMAKE_CURRENT_SOURCE_DIR}/../hw_arm_description/config
               -o ${HW_ARM_TEST_URDF}
       DEPENDS ${HW_ARM_URDF_XACRO} ${HW_ARM_DESC_DEPS}
       COMMENT "展开 hw_arm.urdf.xacro → hw_arm_test.urdf（测试用）")

@@ -96,7 +96,7 @@
                ⚠️ 默认全关 + dry_run，第一次务必先用 dry_run 看日志里的
                   g(q) 数值和方向对不对，再 gravity_compensation=true 真正施加。
                   方向错了会**主动往下压**，比不补偿更危险。 -->
-          <param name="gravity_compensation">false</param>
+          <param name="gravity_compensation">true</param>
           <param name="gravity_dry_run">true</param>
           <param name="gravity_scale">1.0</param>
           <!-- CAN ID 映射：joint1..joint6 各自用哪个电机发送 ID（接收自动 +0x10）

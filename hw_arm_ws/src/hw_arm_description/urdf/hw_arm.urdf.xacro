@@ -27,13 +27,18 @@
   <xacro:arg name="refresh_per_cycle" default="2" />
   <xacro:arg name="use_gazebo" default="false" />
 
-  <xacro:property name="config_root" value="$(find hw_arm_description)/config" />
+  <!-- config_root 用 $(arg) 而不是 $(find)，这样**构建期**（包还没安装、
+       不在 ament 索引里）也能用 `xacro ... config_root:=<绝对路径>` 覆盖。
+       传了 arg 之后，默认值里的 $(find) 不会被求值（已实测验证）。
+       → 解决了「全新 clone 之后 colcon build 编译不过」的问题。 -->
+  <xacro:arg name="config_root" default="$(find hw_arm_description)/config" />
+  <xacro:property name="config_root" value="$(arg config_root)" lazy_eval="false" />
   <xacro:property name="control_gains"
                   value="${xacro.load_yaml(config_root + '/control/control_gains.yaml')}"
                   lazy_eval="false" />
 
-  <xacro:include filename="$(find hw_arm_description)/urdf/utils/hw_arm_robot.xacro" />
-  <xacro:include filename="$(find hw_arm_description)/urdf/ros2_control/hw_arm.ros2_control.xacro" />
+  <xacro:include filename="utils/hw_arm_robot.xacro" />
+  <xacro:include filename="ros2_control/hw_arm.ros2_control.xacro" />
 
   <!-- 几何 / 惯性 -->
   <xacro:hw_arm_robot config_root="${config_root}" prefix="$(arg prefix)" />

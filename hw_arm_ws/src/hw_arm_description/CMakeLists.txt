@@ -26,6 +26,7 @@ if(XACRO_EXECUTABLE)
     COMMAND ${XACRO_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/urdf/hw_arm.urdf.xacro
             use_fake_hardware:=false
+            config_root:=${CMAKE_CURRENT_SOURCE_DIR}/config
             -o ${GENERATED_URDF}
     DEPENDS ${DESC_DEPS}
     COMMENT "展开 hw_arm.urdf.xacro → hw_arm.urdf（重力补偿/其它工具用）")

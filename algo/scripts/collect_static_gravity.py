@@ -401,20 +401,39 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
         print(f"       g_nom (N·m)= {np.round(g_nom, 3)}")
 
     def step() -> str | None:
-        """发一帧 MIT + 收一帧状态，返回错误描述（None=正常）。"""
+        """发一帧 MIT + 主动查询一次状态，返回错误描述（None=正常）。
+
+        ⚠️ **电机只在被查询时才回状态帧**（ROS 硬件插件也是每周期
+           refresh_one + recv_all；只发 MIT 不会有回包）。
+        所以每拍都要跟一帧广播查询，并等六轴都回了新帧再判健康，
+        否则 settle / 采样期间一帧状态都收不到，健康检查必然误报超时。
+        """
         if not bus.mit(kp, kd, q_des, tau_ff):
             return "MIT 帧发送失败（CAN 发送队列满？）"
-        bus.poll()
+
+        n_before = dict(bus.seq)
+        bus.query()
+        t_end = time.monotonic() + 0.008          # 最多等 8 ms 收齐六轴回帧
+        while time.monotonic() < t_end:
+            bus.poll()
+            if all(bus.seq[i] > n_before[i] for i in ids):
+                break
+            time.sleep(0.0003)
         return bus.bus_health(max_age=0.05)
 
     # ③ 使能 + 立刻满 kp / 满前馈（**不做软启动**）
     bus.enable()
-    for _ in range(5):
+    fails = 0
+    for _ in range(12):
         err = step()
         if err:
-            print(f"     ❌ 使能阶段异常：{err}")
-            bus.disable_and_verify()
-            return None
+            fails += 1
+            if fails >= 4:            # 连续 4 拍都不行才判定失败
+                print(f"     ❌ 使能阶段异常（连续 {fails} 拍）：{err}")
+                bus.disable_and_verify()
+                return None
+        else:
+            fails = 0
         time.sleep(0.002)
 
     settled = False

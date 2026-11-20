@@ -449,17 +449,21 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
 
     # ③ 使能 + 立刻满 kp / 满前馈（**不做软启动**）
     bus.enable()
-    fails = 0
-    for _ in range(12):
+    # 使能瞬间电机电流突变，偶尔会有几十毫秒的丢帧（实测会碰到）。
+    # 所以用**时间预算**判失败：连续异常超过 0.8 s 才算真故障。
+    t_fail_since = None
+    for _ in range(40):
         err = step()
         if err:
-            fails += 1
-            if fails >= 4:            # 连续 4 拍都不行才判定失败
-                print(f"     ❌ 使能阶段异常（连续 {fails} 拍）：{err}")
+            if t_fail_since is None:
+                t_fail_since = time.monotonic()
+            elif time.monotonic() - t_fail_since > 0.8:
+                print(f"     ❌ 使能阶段异常持续 "
+                      f"{time.monotonic() - t_fail_since:.2f}s：{err}")
                 bus.disable_and_verify()
                 return None
         else:
-            fails = 0
+            t_fail_since = None
 
     settled = False
     q_l, tau_l, dq_l = [], [], []
@@ -474,15 +478,26 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
         calm = 0
         q_ref = None
         t_win = None
+        t_fail_since = None
+        vmax_seen = 0.0
         while time.monotonic() < t_end:
             err = step()
             if err:
-                print(f"     ❌ {err}，中止本次采集")
-                return None
+                # 瞬时丢帧（<0.5s）不中止，但也不计入"静止"
+                if t_fail_since is None:
+                    t_fail_since = time.monotonic()
+                elif time.monotonic() - t_fail_since > 0.5:
+                    print(f"     ❌ {err}（已持续 "
+                          f"{time.monotonic() - t_fail_since:.2f}s），中止本次采集")
+                    return None
+                q_ref, t_win, calm = None, None, 0
+                continue
+            t_fail_since = None
 
             dq = bus.dq_joint()
             q_now = bus.q_joint()
             vmax = float(np.abs(dq).max())
+            vmax_seen = max(vmax_seen, vmax)
             if vmax > v_hard_limit:
                 print(f"     ❌ 高速运动 |dq|max={vmax:.1f} rad/s，紧急失能")
                 return None
@@ -503,8 +518,10 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
 
         if not settled:
             print(f"     ❌ {settle_timeout:.1f}s 内没有稳定下来"
-                  f"（calm={calm}，需要 {calm_frames} 帧 + "
-                  f"{settle_window_s * 1000:.0f}ms 窗口）→ 拒绝本次采集")
+                  f"（calm={calm}，需要 {calm_frames} 拍 + "
+                  f"{settle_window_s * 1000:.0f}ms 窗口；"
+                  f"期间 |dq|max={vmax_seen:.3f} rad/s，"
+                  f"容差 {dq_tol}）→ 拒绝本次采集")
             return None
 
         # ⑤ 采样（期间持续做同样的安全检查）
@@ -577,10 +594,11 @@ def main() -> int:
     ap.add_argument("--ids", default="1,2,3,4,5,6")
     ap.add_argument("--poses", type=int, default=25)
     ap.add_argument("--mode", default="manual", choices=["manual", "auto"])
-    ap.add_argument("--kp", type=float, default=40.0)
+    ap.add_argument("--kp", type=float, default=80.0,
+                    help="位置刚度。标称模型有误差时，kp 越大越容易稳住")
     ap.add_argument("--kd", type=float, default=1.5)
-    ap.add_argument("--dq-tol", type=float, default=0.02, help="静止判据 rad/s")
-    ap.add_argument("--settle-timeout", type=float, default=3.0)
+    ap.add_argument("--dq-tol", type=float, default=0.05, help="静止判据 rad/s")
+    ap.add_argument("--settle-timeout", type=float, default=6.0)
     ap.add_argument("--sample", type=float, default=0.6, help="采样时长 s")
     ap.add_argument("--auto-step", type=float, default=6.0, help="auto 每次偏转(度)")
     ap.add_argument("--urdf", default=None)

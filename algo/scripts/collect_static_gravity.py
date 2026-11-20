@@ -168,25 +168,32 @@ class ArmBus:
         self.seq = {i: 0 for i in self.ids}       # 收到的**有效状态帧**计数（逐轴）
 
     # ── 发送 ──────────────────────────────────────────────────
-    def _send(self, can_id: int, data: bytes) -> bool:
+    def _send(self, can_id: int, data: bytes, tries: int = 3) -> bool:
         frame = struct.pack("<IB3x8s", can_id, len(data), data.ljust(8, b"\x00"))
-        try:
-            self.sock.send(frame)
-            return True
-        except (BlockingIOError, TimeoutError):
-            self.dropped += 1
-            return False
-        except OSError as e:
-            if e.errno in (105, 11):
-                self.dropped += 1
-                return False
-            raise
+        for k in range(max(1, tries)):
+            try:
+                self.sock.send(frame)
+                return True
+            except (BlockingIOError, TimeoutError):
+                pass
+            except OSError as e:
+                if e.errno not in (105, 11):      # ENOBUFS / EAGAIN
+                    raise
+            # 发送队列短暂拥塞，等一下再试（实测 gs_usb 的可持续速率约 3000 fps）
+            time.sleep(0.0005 * (k + 1))
+        self.dropped += 1
+        return False
 
     def query(self):
-        """广播刷新帧：0x7FF + [id_lo, id_hi, 0xCC, 0]"""
+        """广播刷新帧：0x7FF + [id_lo, id_hi, 0xCC, 0]（一次刷全部）"""
         for i in self.ids:
             self._send(BROADCAST_ID,
                        bytes([i & 0xFF, (i >> 8) & 0xFF, 0xCC, 0x00]))
+
+    def refresh_one(self, i: int) -> bool:
+        """只刷新一台。轮转刷新用，避免一次发太多帧把发送队列打满。"""
+        return self._send(BROADCAST_ID,
+                          bytes([i & 0xFF, (i >> 8) & 0xFF, 0xCC, 0x00]))
 
     def enable(self):
         for i in self.ids:
@@ -379,11 +386,11 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
       · 采样期间持续做同样的检查，任何一项不满足都丢弃样本
       · 失能要回读确认，没有确认就明确报错
     """
-    calm_frames = 25          # 需要连续多少个"每轴都有新帧"的循环
+    calm_frames = 20          # 需要连续多少拍满足"慢 + 不漂"
     settle_window_s = 0.20    # 位置稳定窗口
     pos_tol = 0.01            # 窗口内位置漂移上限 (rad)
     v_hard_limit = 5.0        # 紧急失能阈值 (rad/s)
-    min_valid_frames = 20     # 采样期每轴至少要有的有效帧数
+    min_valid_frames = 20     # 采样期至少要有多少个有效样本
 
     # ① 必须读到新鲜位置
     if not bus.fresh(timeout=1.0):
@@ -400,26 +407,45 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
         print(f"       q0    (度) = {np.round(np.degrees(q0), 2)}")
         print(f"       g_nom (N·m)= {np.round(g_nom, 3)}")
 
+    # 每拍刷新的电机数（轮转）与循环周期
+    #
+    # 为什么要限速：gs_usb 适配器的可持续发送速率实测约 3000 fps，
+    #   6 帧 MIT + 6 帧查询 @ 400 Hz = 4800 fps → 直接 ENOBUFS。
+    #   这里改成「6 帧 MIT + 2 帧刷新」@ 200 Hz = 1600 fps，留足余量；
+    #   每台电机每 3 拍被刷新一次（15 ms），比 100 ms 的健康门槛宽裕得多。
+    refresh_per_step = 2
+    step_period = 0.005              # 200 Hz
+    max_age = 0.10                   # 每轴 100 ms 内必须有过状态帧
+    rr = [0]                         # 轮转游标
+
     def step() -> str | None:
-        """发一帧 MIT + 主动查询一次状态，返回错误描述（None=正常）。
+        """发一帧 MIT + 轮转刷新若干台，返回错误描述（None=正常）。
 
         ⚠️ **电机只在被查询时才回状态帧**（ROS 硬件插件也是每周期
            refresh_one + recv_all；只发 MIT 不会有回包）。
-        所以每拍都要跟一帧广播查询，并等六轴都回了新帧再判健康，
-        否则 settle / 采样期间一帧状态都收不到，健康检查必然误报超时。
+           但也**不能每拍刷全部 6 台** —— 帧数会超过适配器可持续速率。
         """
+        t_begin = time.monotonic()
         if not bus.mit(kp, kd, q_des, tau_ff):
             return "MIT 帧发送失败（CAN 发送队列满？）"
 
         n_before = dict(bus.seq)
-        bus.query()
-        t_end = time.monotonic() + 0.008          # 最多等 8 ms 收齐六轴回帧
+        for k in range(refresh_per_step):
+            bus.refresh_one(ids[(rr[0] + k) % len(ids)])
+        rr[0] = (rr[0] + refresh_per_step) % len(ids)
+
+        # 等这一拍刷新到的电机回帧（最多 4 ms）
+        t_end = time.monotonic() + 0.004
         while time.monotonic() < t_end:
             bus.poll()
-            if all(bus.seq[i] > n_before[i] for i in ids):
-                break
-            time.sleep(0.0003)
-        return bus.bus_health(max_age=0.05)
+            time.sleep(0.0002)
+
+        err = bus.bus_health(max_age=max_age)
+        # 补足到固定周期，避免循环跑得过快把总线打满
+        rest = step_period - (time.monotonic() - t_begin)
+        if rest > 0:
+            time.sleep(rest)
+        return err
 
     # ③ 使能 + 立刻满 kp / 满前馈（**不做软启动**）
     bus.enable()
@@ -434,26 +460,25 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
                 return None
         else:
             fails = 0
-        time.sleep(0.002)
 
     settled = False
     q_l, tau_l, dq_l = [], [], []
-    seen = dict(bus.seq)          # 每轴已收到的有效帧计数
 
     try:
-        # ④ 等真正静止 —— 判据是**有效帧**，不是循环次数
+        # ④ 等真正静止
+        #
+        # 数据时效由 step() 的 bus_health 保证（每轴 100 ms 内必有状态帧），
+        # 所以这里不再要求"每一拍六轴全到"（轮转刷新下本来就做不到），
+        # 改用：速度足够小 + 位置在时间窗内不漂。
         t_end = time.monotonic() + settle_timeout
         calm = 0
         q_ref = None
         t_win = None
         while time.monotonic() < t_end:
-            n_before = dict(seen)
             err = step()
             if err:
                 print(f"     ❌ {err}，中止本次采集")
                 return None
-            new = {i: bus.seq[i] - n_before[i] for i in ids}
-            seen = dict(bus.seq)
 
             dq = bus.dq_joint()
             q_now = bus.q_joint()
@@ -462,8 +487,7 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
                 print(f"     ❌ 高速运动 |dq|max={vmax:.1f} rad/s，紧急失能")
                 return None
 
-            # 每一轴都必须在这一拍里给过新帧，否则不认为"静止"
-            if all(new[i] >= 1 for i in ids) and vmax < dq_tol:
+            if vmax < dq_tol:
                 if q_ref is None:
                     q_ref, t_win, calm = q_now, time.monotonic(), 0
                 calm += 1
@@ -476,7 +500,6 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
                     break
             else:
                 q_ref, t_win, calm = None, None, 0
-            time.sleep(0.002)
 
         if not settled:
             print(f"     ❌ {settle_timeout:.1f}s 内没有稳定下来"
@@ -487,15 +510,9 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
         # ⑤ 采样（期间持续做同样的安全检查）
         t_end = time.monotonic() + sample_s
         while time.monotonic() < t_end:
-            n_before = dict(seen)
-            err = step()
+            err = step()          # 内含 100 ms 逐轴时效检查
             if err:
                 print(f"     ❌ 采样中异常：{err} → 丢弃本样本")
-                return None
-            new = {i: bus.seq[i] - n_before[i] for i in ids}
-            seen = dict(bus.seq)
-            if not all(new[i] >= 1 for i in ids):
-                print("     ❌ 采样中有电机没回帧 → 丢弃本样本")
                 return None
 
             dq = bus.dq_joint()
@@ -506,7 +523,6 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
             q_l.append(bus.q_joint())
             tau_l.append(bus.tau_joint())
             dq_l.append(dq)
-            time.sleep(0.002)
     finally:
         # ⑥ 停止：重发 + 回读确认。确认失败必须吼出来
         if not bus.disable_and_verify():

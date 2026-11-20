@@ -464,6 +464,9 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
                 return None
         else:
             t_fail_since = None
+            if _ == 2:      # 使能已稳定，提示松手
+                print("        ✅ 已使能 —— 现在松手（保持 1 秒不动）")
+                time.sleep(0.6)
 
     settled = False
     q_l, tau_l, dq_l = [], [], []
@@ -677,7 +680,9 @@ def main() -> int:
         for k in range(args.poses):
             if args.mode == "manual":
                 try:
-                    input(f"  [{k+1}/{args.poses}] 摆好姿态后按回车…")
+                    print(f"  [{k+1}/{args.poses}] 用手**托住**机械臂摆到目标姿态，"
+                          f"托着别松手，然后按回车")
+                    input("        ")
                 except EOFError:
                     print("  （非交互终端，停止）")
                     break

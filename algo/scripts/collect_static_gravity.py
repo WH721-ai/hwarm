@@ -246,21 +246,45 @@ class ArmBus:
             time.sleep(0.01)
         return False
 
-    def bus_is_quiet(self, ms: float = 200.0) -> int:
-        """不发任何帧，监听 ms 毫秒，返回收到的帧数。
+    def bus_is_quiet(self, ms: float = 200.0,
+                     settle_ms: float = 150.0) -> tuple[int, int]:
+        """不发任何帧，看总线上有没有**别人**在发指令。
 
-        我们不发时电机不会主动上报，所以**只要收到帧，就说明总线上还有
-        另一个主站**（另一个 ros2_control、调试工具、或残留进程）。
-        两个主站同时发 MIT 会互相打架，必须拒绝使能。
+        返回 (控制帧数, 其它帧数)。
+
+        为什么要分两类：
+          · CAN ID 0x01~0x08 = MIT/使能/失能帧，只有主站会发。
+            我们这个窗口内一帧都不发，所以收到这种帧 = **另一个主站在控制电机**，
+            必须拒绝使能（会和我们的 MIT 直接打架）。
+          · 其它（主要是 0x11~0x16 状态帧）= 可能只是我们自己刚发出去的查询
+            还在路上/回声。所以先 settle_ms 排空，再统计，避免误报。
+
+        实测踩过：fresh() 连发了多轮广播查询，返回后几十毫秒内还有回帧在路上，
+        直接把"积压回帧"当成了"另一个主站"，误报 87 帧。
         """
-        self.drain()
-        n = 0
+        # ① 排空：把我们自己刚才发出的查询造成的回声/回帧全部吃掉
+        t_settle = time.monotonic() + settle_ms / 1000.0
+        while time.monotonic() < t_settle:
+            self.drain()
+            time.sleep(0.005)
+
+        # ② 正式统计
+        ctrl, other = 0, 0
         t_end = time.monotonic() + ms / 1000.0
         while time.monotonic() < t_end:
-            if self._recv_one() is not None:
-                n += 1
-            time.sleep(0.002)
-        return n
+            got = self._recv_one()
+            if got is None:
+                time.sleep(0.002)
+                continue
+            raw, _t = got
+            if len(raw) < 16:
+                continue
+            cid = struct.unpack_from("<I", raw, 0)[0] & 0x7FF
+            if 1 <= cid <= 0x08:
+                ctrl += 1
+            else:
+                other += 1
+        return ctrl, other
 
     def bus_health(self, max_age: float = 0.05) -> str | None:
         """返回故障描述；一切正常返回 None。
@@ -467,7 +491,23 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
     v_hard_limit = 5.0        # 紧急失能阈值 (rad/s)
     min_valid_frames = 20     # 采样期至少要有多少个有效样本
 
-    # ① 必须读到新鲜位置
+    # ① 首先确认总线上没有别的**主站**在发指令
+    #
+    # 这一步要做 150ms 排空 + 200ms 统计，期间我们一帧不发、也不读，
+    # 所以必须放在**取位置之前**；否则会把状态帧的时间戳放旧，
+    # 后面的新鲜度检查会误报"反馈超时"。
+    n_ctrl, n_other = bus.bus_is_quiet(200, settle_ms=150)
+    if n_ctrl > 0:
+        print(f"     ❌ 总线上收到 {n_ctrl} 个**控制帧**（CAN ID 0x01~0x08）—— "
+              f"有另一个主站在发指令，拒绝使能")
+        print("        先关掉：ros2_control / openarm-can-cli / 其它调试程序")
+        return None
+    if n_other > 30:
+        print(f"     ❌ 总线上还有 {n_other} 个状态帧在持续流动 —— "
+              f"可能有另一个程序在轮询电机，拒绝使能")
+        return None
+
+    # ② 取新鲜位置（fresh 内部会先丢掉积压，只认请求之后到达的帧）
     if not bus.fresh(timeout=1.0):
         print("     ❌ 读不到新鲜位置，跳过（不使能）")
         return None
@@ -522,23 +562,15 @@ def acquire(bus: ArmBus, ids: list[int], gm: GravityModel,
             time.sleep(rest)
         return err
 
-    # ⑧ 使能前的最后核对（三道闸）
+    # ⑧ 使能前的最后核对
     #
-    # ① 总线必须静默：我们不发时电机不会主动上报，
-    #    还有帧就说明有另一个主站在发指令（ros2_control / 调试工具 / 残留进程）。
-    n_quiet = bus.bus_is_quiet(200)
-    if n_quiet > 0:
-        print(f"     ❌ 总线上还有 {n_quiet} 帧在流动 —— 可能有另一个程序在控制电机，"
-              f"拒绝使能（先关掉 ros2_control / openarm-can-cli 等）")
-        return None
-
-    # ② 反馈必须是刚才这一轮新拿到的（fresh() 已经丢过积压）
+    # ① 反馈必须是刚才这一轮新拿到的（fresh() 已经丢过积压）
     err_h = bus.bus_health(max_age=0.05)
     if err_h:
         print(f"     ❌ 使能前反馈不新鲜：{err_h}")
         return None
 
-    # ③ 逐轴核对：编码后的目标必须和**实测位置**一致
+    # ② 逐轴核对：编码后的目标必须和**实测位置**一致
     #    这条能挡住 direction / pMax 配错导致"目标其实是零位"的情况。
     q_motor_now = {i: bus.q[i] for i in ids}
     worst = 0.0

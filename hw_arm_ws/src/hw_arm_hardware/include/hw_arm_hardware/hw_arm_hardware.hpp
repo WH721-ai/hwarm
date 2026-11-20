@@ -123,6 +123,8 @@ class HwArmHW : public hardware_interface::SystemInterface {
   //
   // 为什么默认 dry-run：重力补偿方向/幅值一旦错了，机械臂会**主动往下压**，
   // 比不补偿更危险。先看数字对不对，再真正施加。
+  bool motors_ready_ = false;   // on_activate 里确认能读到反馈后才为 true
+
   bool gravity_comp_ = false;
   bool gravity_dry_run_ = true;
   double gravity_scale_ = 1.0;

@@ -461,10 +461,10 @@ CallbackReturn HwArmHW::on_activate(const rclcpp_lifecycle::State& /*prev*/) {
   // 于是"把命令初始化为当前位置"等于把命令初始化成 0 —— 一使能电机就被驱动到 0 位。
   // 实测就是这么把 6 台电机拉回 0 的。
   bool got_feedback = false;
-  for (int attempt = 0; attempt < 10 && !got_feedback; ++attempt) {
+  for (int attempt = 0; attempt < 20 && !got_feedback; ++attempt) {
     openarm_->refresh_all();
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    openarm_->recv_all(2000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    openarm_->recv_all(5000);
     const auto& ms = openarm_->get_arm().get_motors();
     for (size_t k = 0; k < active_idx_.size() && k < ms.size(); ++k) {
       // 位置恰好为 0 且错误码为 0 → 大概率还没收到过帧
@@ -475,11 +475,30 @@ CallbackReturn HwArmHW::on_activate(const rclcpp_lifecycle::State& /*prev*/) {
     }
   }
   if (!got_feedback) {
+    // ⚠️ 以前这里 return ERROR —— 然后 controller_manager 会抛
+    //    std::runtime_error("Failed to set the initial state ... to active")，
+    //    整个 ros2_control_node **SIGABRT 退出**（exit code -6），
+    //    joint_state_broadcaster 也跟着没了 → RViz 一堆连杆叠在原点。
+    //
+    //    现在改成「软失败」：硬件保持 active 但**不使能电机**，
+    //    read/write 照常跑（只读不写），这样：
+    //      · RViz / joint_states 正常运行，方便排查
+    //      · 电机一动不动（安全）
+    //      · 日志里有明确的错误 + 总线计数
+    motors_ready_ = false;
+    log_bus_status(openarm_->get_bus_status(), "on_activate");
     RCLCPP_ERROR(logger(),
-                 "初始化阶段读不到任何电机反馈（全部 position=0, err=0）。"
-                 "为避免把命令错误地初始化为 0 并把电机驱动到 0 位，拒绝使能。");
-    return CallbackReturn::ERROR;
+                 "读不到任何电机反馈（%zu 台，%d 次尝试 / %.1f 秒）。"
+                 "**电机保持失能**，不会动。",
+                 active_idx_.size(), 20, 1.0);
+    RCLCPP_ERROR(logger(),
+                 "  排查：can0 是否 UP（ip -br link show can0）、bitrate 是否 1M、"
+                 "电机是否上电、CAN_H/CAN_L 是否接反、终端电阻 120Ω");
+    RCLCPP_ERROR(logger(),
+                 "  手动验证：python3 src/hw_arm_description/scripts/scan_motors.py");
+    return CallbackReturn::SUCCESS;   // ← 不再让整个节点崩掉
   }
+  motors_ready_ = true;
 
   openarm_->enable_all();
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -582,6 +601,8 @@ return_type HwArmHW::read(const rclcpp::Time& /*time*/, const rclcpp::Duration& 
 // ──────────────────────────────────────────────────────────── write
 return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
   if (!openarm_) return return_type::ERROR;
+  // 电机没就绪（读不到反馈 → 没使能）时，一个 MIT 帧都不发
+  if (!motors_ready_) return return_type::OK;
 
   // 只给实际存在的电机发指令（顺序必须与 init_arm_motors 的注册顺序一致）
   std::vector<openarm::damiao_motor::MITParam> params;

@@ -244,7 +244,7 @@ def main() -> int:
         return 3
 
     meta, wps = parse_cli_output(proc.stdout)
-    if meta.get("ok") != "true":
+    if meta.get("ok") is not True:      # 注意：解析成的是 bool，不要再和字符串比
         err = meta.get("error", "未知原因")
         print(f"❌ 规划失败：{err}")
         print(f"   （position_error={meta.get('position_error')}, "

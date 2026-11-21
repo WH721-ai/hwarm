@@ -103,6 +103,7 @@ struct CartesianPlanResult {
   double final_orientation_error = 0.0;  ///< (rad)
 
   bool limited = false;   ///< 过程中碰过关节限位
+  Eigen::VectorXd failure_q; ///< 失败时的关节角（ok=false 时有意义）
   bool singular = false;  ///< 过程中 σ_min 低于阈值
   double min_sigma_ratio = 0.0; ///< 全程最小 σ_min/σ_max（已按特征长度缩放）
 };

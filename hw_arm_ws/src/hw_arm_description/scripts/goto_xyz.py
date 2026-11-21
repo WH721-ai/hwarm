@@ -245,9 +245,23 @@ def main() -> int:
 
     meta, wps = parse_cli_output(proc.stdout)
     if meta.get("ok") != "true":
-        print(f"❌ 规划失败：{meta.get('error', '未知原因')}")
+        err = meta.get("error", "未知原因")
+        print(f"❌ 规划失败：{err}")
         print(f"   （position_error={meta.get('position_error')}, "
               f"sigma_ratio={meta.get('min_sigma_ratio')}）")
+        if meta.get("failure_q_deg"):
+            print(f"   失败的位形 q(度) = {meta['failure_q_deg']}")
+        if "奇异" in err:
+            print()
+            print("   ⚠️ 这是【真实的奇异/病态位形】，不是误报：")
+            print("      · 本臂 j2/j3/j5 三轴平行，q5 接近 0° 时腕部奇异")
+            print("      · 当前位形里 joint4 又贴着限位，笛卡尔解会把它推出去")
+            print("   ✅ 解法：先用关节空间点动挪到「舒适位形」，再走直线：")
+            print("        python3 jog.py 0 0.8 0.4 0 0.6 0 --abs --time 8")
+            print("      该位形 σ_min/σ_max ≈ 0.06（现在的约 30 倍）")
+        elif "限位" in err:
+            print()
+            print("   ⚠️ 轨迹中途撞到关节限位：目标可能超出工作空间，或需要换构型")
         return 3
 
     print(f"  ✅ 规划成功：{len(wps)} 个路点，"

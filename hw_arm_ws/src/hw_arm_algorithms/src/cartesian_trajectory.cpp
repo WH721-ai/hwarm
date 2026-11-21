@@ -203,6 +203,7 @@ CartesianPlanResult planCartesianLine(const RobotModel& model, RobotWorkspace& w
       if (opt.stop_on_singularity) {
         result.error = "接近奇异位形（σ_min/σ_max=" + std::to_string(sigma_ratio) +
                        " < " + std::to_string(opt.min_singular_ratio) + "）";
+        result.failure_q = q;
         return result;
       }
     }
@@ -258,11 +259,13 @@ CartesianPlanResult planCartesianLine(const RobotModel& model, RobotWorkspace& w
 
   if (result.limited) {
     result.error = "过程中碰到关节限位";
+    result.failure_q = q;
     return result;  // ok 保持 false：限位钳制后轨迹已偏离直线
   }
   if (result.final_position_error > 1e-3 || result.final_orientation_error > 1e-3) {
     result.error = "终点未收敛（位置残差) " +
                    std::to_string(result.final_position_error) + " m";
+    result.failure_q = q;
     return result;
   }
 

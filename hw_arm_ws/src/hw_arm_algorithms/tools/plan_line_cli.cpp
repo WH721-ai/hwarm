@@ -157,7 +157,15 @@ int main(int argc, char** argv) {
                                                         target, opt);
 
   std::printf("ok: %s\n", res.ok ? "true" : "false");
-  if (!res.ok) std::printf("error: \"%s\"\n", res.error.c_str());
+  if (!res.ok) {
+    std::printf("error: \"%s\"\n", res.error.c_str());
+    if (res.failure_q.size() > 0) {
+      std::printf("failure_q_deg: [");
+      for (int i = 0; i < res.failure_q.size(); ++i)
+        std::printf("%s%.1f", i ? ", " : "", res.failure_q[i] * 180.0 / M_PI);
+      std::printf("]\n");
+    }
+  }
   std::printf("position_error: %.6g\n", res.final_position_error);
   std::printf("orientation_error: %.6g\n", res.final_orientation_error);
   std::printf("min_sigma_ratio: %.6g\n", res.min_sigma_ratio);

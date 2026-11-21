@@ -37,6 +37,7 @@ add_library(${PROJECT_NAME}
   src/data.cpp       # RobotWorkspace：预分配缓冲
   src/gravity.cpp    # computeGravity
   src/kinematics.cpp # FK / Jacobian / IK / 奇异度
+  src/cartesian_trajectory.cpp  # 笛卡尔直线 + RMRC（离线生成路点）
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -84,6 +85,11 @@ ament_export_include_directories(include)
 # 微基准（不参与测试，手动运行）
 add_executable(bench_gravity test/bench_gravity.cpp)
 target_link_libraries(bench_gravity ${PROJECT_NAME})
+
+# 命令行：起点关节角 + 目标位姿 → 笛卡尔直线轨迹的关节路点（YAML）
+# 供 goto_xyz.py 调用；也可单独用来离线检查轨迹
+add_executable(plan_line_cli tools/plan_line_cli.cpp)
+target_link_libraries(plan_line_cli ${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -138,6 +144,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_kinematics test/test_kinematics.cpp)
   target_link_libraries(test_kinematics ${PROJECT_NAME})
   target_compile_definitions(test_kinematics PRIVATE
+    HW_ARM_DEFAULT_URDF="${HW_ARM_TEST_URDF}")
+
+  # 笛卡尔直线轨迹（RMRC）
+  ament_add_gtest(test_cartesian_trajectory test/test_cartesian_trajectory.cpp)
+  target_link_libraries(test_cartesian_trajectory ${PROJECT_NAME})
+  target_compile_definitions(test_cartesian_trajectory PRIVATE
     HW_ARM_DEFAULT_URDF="${HW_ARM_TEST_URDF}")
 endif()
 

@@ -52,8 +52,8 @@ motors:
     v_max_physical: 10.47   # ★ 24V 空载 100 rpm 换算；RID22 是 25                    # RID 22
     t_protocol: 200.0              # RID 23 ⚠️ > t_peak(120)，下发会被饱和
     # ── 待实测 ──
-    rotor_inertia: null            # kg·m²，读 RID 12（见末尾）
-    armature: null                 # kg·m²，折算到关节侧 = Gr²·rotor_inertia
+    rotor_inertia: 0.000522555027      # kg·m²（RID 12 实读，电机侧）
+    armature: 0.0522555        # kg·m²（Gr²·rotor_inertia，关节侧）
 
   joint2:
     model: DM-J6216P-2EC
@@ -82,8 +82,8 @@ motors:
     v_max: 40.0
     v_max_physical: 27.23   # ★ 24V 空载 260 rpm 换算；RID22 是 40
     t_protocol: 70.0               # ⚠️ > t_peak(45)
-    rotor_inertia: null
-    armature: null
+    rotor_inertia: 2.91325996e-05      # kg·m²（RID 12 实读，电机侧）
+    armature: 0.00745795        # kg·m²（Gr²·rotor_inertia，关节侧）
 
   joint3:
     model: DM-J4340-2EC V1.1
@@ -111,8 +111,8 @@ motors:
     v_max: 10.0
     v_max_physical: 5.86   # ★ 24V 空载 56 rpm 换算；RID22 是 10
     t_protocol: 28.0               # ⚠️ < t_peak(40)，协议先饱和
-    rotor_inertia: null
-    armature: null
+    rotor_inertia: 1.81064006e-05      # kg·m²（RID 12 实读，电机侧）
+    armature: 0.0289702        # kg·m²（Gr²·rotor_inertia，关节侧）
 
   joint4:
     model: DM-J4310P-2EC
@@ -140,8 +140,8 @@ motors:
     v_max: 30.0
     v_max_physical: 20.94   # ★ 24V 空载 200 rpm 换算；RID22 是 30
     t_protocol: 10.0               # < t_peak(12.5)，协议先饱和
-    rotor_inertia: null
-    armature: null
+    rotor_inertia: 2.03553009e-05      # kg·m²（RID 12 实读，电机侧）
+    armature: 0.00203553        # kg·m²（Gr²·rotor_inertia，关节侧）
 
   joint5:
     model: DM-J4310-2EC V1.1
@@ -169,8 +169,8 @@ motors:
     v_max: 30.0
     v_max_physical: 20.94   # ★ 24V 空载 200 rpm 换算；RID22 是 30
     t_protocol: 10.0               # ⚠️ > t_peak(7)
-    rotor_inertia: null
-    armature: null
+    rotor_inertia: 1.78233004e-05      # kg·m²（RID 12 实读，电机侧）
+    armature: 0.00178233        # kg·m²（Gr²·rotor_inertia，关节侧）
 
   joint6:
     model: DM-J4310-2EC V1.1
@@ -198,12 +198,41 @@ motors:
     v_max: 30.0
     v_max_physical: 20.94   # ★ 24V 空载 200 rpm 换算；RID22 是 30
     t_protocol: 10.0               # ⚠️ > t_peak(7)
-    rotor_inertia: null
-    armature: null
+    rotor_inertia: 1.76423e-05      # kg·m²（RID 12 实读，电机侧）
+    armature: 0.00176423        # kg·m²（Gr²·rotor_inertia，关节侧）
 
 # ─────────────────────────────────────────────────────────────
-# 转子惯量：说明书里**没有**
+# 转子惯量：说明书里没有，已从固件 RID 12 实读（2026-11-22）
 # ─────────────────────────────────────────────────────────────
+#
+#   ID  型号         J_rotor(kg·m²)   Gr    armature = Gr²·J
+#    1  DM10010L     5.22555e-04     10    5.22555e-02
+#    2  DM6216P      2.91326e-05     16    7.45795e-03
+#    3  DM4340       1.81064e-05     40    2.89702e-02
+#    4  DM4310P      2.03553e-05     10    2.03553e-03
+#    5  DM4310       1.78233e-05     10    1.78233e-03
+#    6  DM4310       1.76423e-05     10    1.76423e-03
+#
+#   自洽性检查（转子惯量 ∝ 直径⁵ 量级）：
+#     DM10010L(120mm) / DM4310(57mm) = 5.23e-4/1.76e-5 = 29.6×，
+#     而 (120/57)^5 = 41× —— 同量级 ✅
+#     DM6216P(67mm) / DM4340(57mm) = 2.91e-5/1.81e-5 = 1.61×，
+#     (67/57)^5 = 2.2× —— 同量级 ✅
+#     DM4310 与 DM4340 同 57mm 机座，转子惯量 1.76e-5 vs 1.81e-5 几乎相同 ✅
+#
+#   ⚠️ 旧的 armature（hw_arm_mujoco/scripts/urdf_to_mjcf.py 里的
+#      [0.01, 0.01, 0.16, 0.01, 0.01, 0.01]）与实测差很多：
+#        j1 0.010 → 0.0523（低估 5×）
+#        j3 0.160 → 0.0290（高估 5.5×）
+#        j4/j5/j6 0.010 → 0.0020/0.0018/0.0018（高估 5×）
+#
+#   加进 URDF 后 M 的变化（q=(0,0.8,0.4,0,0.6,0)）：
+#        加之前：[0.0335, 0.1358, 0.0806, 0.00105, 0.00150, 0.0]
+#        加之后：[0.0864, 0.1740, 0.1113, 0.00399, 0.00328, 0.00177]
+#        cond(M) 2.4e5 → 182   ← 从"接近奇异"变成"可用"
+#
+# ─────────────────────────────────────────────────────────────
+# 原始记录（保留）
 # 五份说明书的技术参数表都没有"转动惯量"这一项。
 # 唯一的来源是固件寄存器：
 #

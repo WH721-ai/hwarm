@@ -24,7 +24,10 @@ import struct
 import sys
 import time
 
-CAN_EFF_FLAG = 0x80000000
+# ⚠️ DM 电机的参数查询用**标准 11 位帧**（CAN ID = 0x7FF），
+#    不要加 CAN_EFF_FLAG(0x80000000) —— 那会变成 29 位扩展帧，电机不认。
+#    （read_motor_registers.py 里 BROADCAST_ID 就是裸的 0x7FF）
+BROADCAST_ID = 0x7FF
 
 
 def request_frame(motor_id: int, rid: int) -> bytes:
@@ -35,8 +38,7 @@ def query(sock: socket.socket, motor_id: int, rid: int, tries: int = 6,
           timeout: float = 0.05):
     """返回 (float32 值, 原始 4 字节) 或 (None, None)"""
     payload = request_frame(motor_id, rid)
-    can_id = 0x7FF | CAN_EFF_FLAG
-    frame = struct.pack("<IB3x8s", can_id, 8, payload)
+    frame = struct.pack("<IB3x8s", BROADCAST_ID, 8, payload)
 
     for _ in range(tries):
         sock.send(frame)
@@ -46,14 +48,17 @@ def query(sock: socket.socket, motor_id: int, rid: int, tries: int = 6,
                 raw = sock.recv(16)
             except socket.timeout:
                 break
-            cid, dlc = struct.unpack_from("<IB", raw, 0)
-            # 应答来自 master_id = motor_id + 0x10
-            if (cid & 0x1FFFFFFF) != (0x10 + motor_id) or dlc < 5:
+            if len(raw) < 16:
                 continue
+            _cid, dlc = struct.unpack_from("<IB", raw, 0)
             data = raw[8:8 + dlc]
-            if data[0] != rid:
+            # 应答帧格式（与 read_motor_registers.py 一致）：
+            #   [0] 电机 ID  [1] ?  [2] 0x33  [3] RID  [4:8] float32 LE
+            if len(data) < 8 or data[2] != 0x33 or data[3] != rid:
                 continue
-            return struct.unpack("<f", bytes(data[1:5]))[0], bytes(data[1:5])
+            if (data[0] & 0x0F) != (motor_id & 0x0F):
+                continue
+            return struct.unpack("<f", bytes(data[4:8]))[0], bytes(data[4:8])
     return None, None
 
 

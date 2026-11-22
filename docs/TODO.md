@@ -1,0 +1,166 @@
+# hw_arm 待办清单
+
+> 最后更新：2026-11-22
+> 编号规则延续 README 里的 `C-xx`；新增的按时间顺序往后排，不复用旧号。
+
+---
+
+## P0 — 会影响真机安全 / 必须先做
+
+### C-30 MoveIt 2 集成（**用户指定：先记下，后面再做**）
+
+**动机**：当前执行层是自研"类 MoveIt"的控制库（`kinematics.cpp` + `ik_selection.cpp`
++ `goto_xyz.py` → JTC），**没有碰撞检测，也没有复杂运动序列能力**。
+MoveIt 2 补的正是这两块。
+
+**定位**：方案 B —— MoveIt 只做**规划 + 避障**，执行仍走现有 JTC；
+现有 IK 链（点对点）保持不动。长期可选方案 C：把 `ik_selection` 包成
+MoveIt 的 `KinematicsBase` 插件，让 MoveIt 也享受"选解 + 路径不穿奇异"。
+
+**前置条件（不满足就别开始）**
+- [ ] `sudo apt install ros-jazzy-moveit ros-jazzy-moveit-planners-ompl \
+        ros-jazzy-moveit-simple-controller-manager ros-jazzy-moveit-ros-visualization`
+      （2026-11-22 核对：四个包均未安装，apt 源里有 2.12.4）
+- [ ] 先修 C-31（URDF 速度上限）—— 否则 MoveIt 按错误速度做时间参数化
+- [ ] 先补加速度参数 —— MoveIt 的 TOTG/Ruckig 必须有 `max_acceleration`
+
+**要新建的包** `hw_arm_ws/src/hw_arm_moveit_config/`
+```
+config/
+  hw_arm.srdf              用现成的 hw_arm_description/scripts/gen_srdf.py 生成，
+                           再手补 <group>/<end_effector>/<virtual_joint>/<group_state>
+  joint_limits.yaml        MoveIt 格式（max_velocity / max_acceleration / max_jerk）
+  kinematics.yaml          KDL 起步；q5≈0 腕部奇异附近成功率低，后续换 pick_ik
+  ompl_planning.yaml       range 要小（臂展只有 28 cm），
+                           longest_valid_segment_fraction ≈ 0.005
+  moveit_controllers.yaml  type: FollowJointTrajectory,
+                           action_ns: follow_joint_trajectory,
+                           controller: hw_arm_controller  ← 与现有 JTC 天然对齐
+  hw_arm.rviz
+launch/
+  demo.launch.py           全 mock，只规划不执行
+  plan_execute.launch.py   接真机 JTC
+```
+
+**已知的 5 个数据问题（写配置前必须处理）**
+1. `joint_limits.yaml`（我们的）里 joint1 `velocity: 16.755`，
+   但 24V 空载 100 rpm = **10.47** —— 见 C-31
+2. 加速度完全没有 → MoveIt 需要：`[84.8, 4.0, 80.8, 785, 852, 1700]` rad/s²
+3. `effort` 与名称牌不符：现有 j2=40/j3=27/j4~6=7，
+   实测额定 j2=10/j3=12/j4=3.5/j5,6=3
+4. joint1/joint6 是有界 ±π / ±2π（不是 continuous）：MoveIt 不会绕圈，
+   但边界附近可能选"绕远路"的解
+5. q5≈0 是腕部奇异（j2/j3/j5 三轴平行）→ KDL IK 成功率低，
+   要 `kinematics_solver_timeout: 0.05`、`attempts: 5`
+
+**与现有框架的冲突点**
+- 两套 IK（MoveIt KDL vs `ik_selection`）：同一目标可能给不同解 → 长期用方案 C 统一
+- 两套时间参数化（MoveIt TOTG/Ruckig vs 两点轨迹）
+- JTC 容差（C-29 刚加）：太紧会让 MoveIt 报 `execution failed`
+- **执行互斥**：MoveIt 和 `goto_xyz.py` 都会发 FollowJointTrajectory，
+  JTC 会用新目标抢占旧目标 → 需要一把执行锁
+
+**验收顺序**（每步都能单独验证）
+1. `demo.launch.py`（mock）：RViz 能拖末端、能规划、能预览 —— 能暴露 ~90% 配置错误
+2. 接真机、速度缩放 0.1：`default_velocity_scaling_factor: 0.1`
+3. 逐步提速到实测边界
+4. 调 JTC 容差与 `max_acceleration` 对齐
+
+**估计**：装包 10 min + 只规划 2 h + 接 JTC 1 h + 调参 2 h ≈ **半天到一天**
+
+---
+
+### C-31 按实测数据修正 URDF / joint_limits 的速度与力矩上限
+
+`config/joint/joint_limits.yaml` 是 URDF 限位的唯一来源，但数值没跟实测对齐：
+
+| 关节 | 现在写的 velocity | 24V 物理上限 | 现写的 effort | 实测额定 |
+|---|---|---|---|---|
+| joint1 | 16.755 | **10.47** | 40 | 40 ✅ |
+| joint2 | 16.755 | 27.23（偏保守） | 40 | **10** |
+| joint3 | 5.4454 | 5.86 ✅ | 27 | **12** |
+| joint4 | 20.944 | 20.94 ✅ | 7 | **3.5** |
+| joint5 | 20.944 | 20.94 ✅ | 7 | **3** |
+| joint6 | 20.944 | 20.94 ✅ | 7 | **3** |
+
+数据源：`config/control/motor_specs.yaml`（说明书 + 固件 RID 实读）。
+**注意**：改了这个会影响 URDF → 也会影响 `ik_selection` 的限位余量判据。
+
+---
+
+### C-32 把 armature（转子惯量）接进动力学模型
+
+`motor_specs.yaml` 里已有实测的 `armature`（RID 12 × Gr²），但
+`RobotModel::load(urdf)` 只读 URDF，URDF 没有 armature 字段。
+
+现状后果：`M66 = 9.1e-7`（≈0），`cond(M) = 2.4e5`，动力学不可用。
+加上后：`M66 = 1.77e-3`，`cond(M) = 182`。
+
+建议做法（方案 A）：`RobotModel::load(urdf, armature)` 重载，
+加载后加到 `inertias[i](2,2)`。Pinocchio 里 `model.inertias[i]` 就是 joint i 的
+坐标系、转轴是它的 z 轴，加法是**精确正确**的。
+
+---
+
+## P1 — 功能推进
+
+### C-29 安全壳阈值实测标定（刚加，值是拍出来的）
+- `hw_arm_hardware.cpp` 的 `stale_timeout_ms_ = 200`：要看真实丢帧分布
+- `hw_arm_controllers.yaml` 的 `constraints`（trajectory 0.09 / goal 0.05 rad）：
+  按真机重复性收紧
+- 建议二者都改成 ROS param，避免每次改数值都要重编译
+
+### C-33 几何标定
+- 1 mm 几何误差 = 1 mm 末端误差（已实测）
+- 编码器本身限在 ~0.14 mm
+- 先用"双构型重合"验证（`solveIKMultiSeed` 能枚举多解）
+
+### C-34 C-05 重力辨识剩余工作
+- 上次只采到 13 个姿态，拟合残差 RMS 0.198 N·m（目标 0.2，勉强）
+- 需要补齐到 ~28 个姿态（joint2 20~120°，joint3 10~140°）
+- 然后 `fit_static_gravity.py` 重拟合
+
+### C-35 阻抗控制接入（`cartesian_impedance` 已写，未接）
+- POSITION/EFFORT 模式互斥（`prepare/perform_command_mode_switch`，目前没有）
+- `previous_applied_torque` 上报（硬件层没有记录上一周期实际发出力矩）
+- 重力 g(q) 的单一 owner + 互锁
+- 转子惯量（C-32）是前提：`M_d = Λ` 依赖 `M⁻¹`
+
+### C-36 碰撞检查
+- 现在 `goto_xyz.py` 只查限位和奇异，不查自碰撞/环境碰撞
+- 短期：MoveIt（C-30）解决
+- 长期：即使不用 MoveIt，也要有独立的碰撞验证层
+
+### C-37 夹爪
+- URDF 里没有末端执行器
+- 装上夹爪后要**重做重力辨识**（C-34 的流程）
+- 可选 `--fixed-arm` 模式 + `payload_mass` 补偿
+
+---
+
+## P2 — 工程化
+
+### C-38 实时性
+- 现在 250 Hz，未做 `SCHED_FIFO` / `mlockall`
+- 目标 1 kHz 需要先解决 USB-CAN 的可持续帧率（实测 gs_usb ≈ 3000 fps）
+
+### C-39 模型一致性校验
+- 运行时 `robot_description` 是 xacro 展开的，磁盘上还有构建产物
+- 改了 YAML 只编译 algorithms 时，URDF 可能是旧的
+- 需要校验模型哈希 / TCP / 关节顺序 / 零偏 / 参数版本
+
+### C-40 执行互斥
+- 多个客户端（`goto_xyz.py`、`jog.py`、MoveIt）都会发 FollowJointTrajectory
+- JTC 会抢占旧目标，不会拒绝新目标
+- 需要执行锁 / 会话标识
+
+---
+
+## 已完成（留档）
+
+- ✅ C-05 静态重力辨识采集器（`collect_static_gravity.py`，含内核时间戳、三门前置检查）
+- ✅ 关节限位真机标定（`calibrate_limits.py`）
+- ✅ direction ±1 标定与验证（`mirror_check.py`）
+- ✅ 24V 电机规格 + 转子惯量实读（`motor_specs.yaml`，RID 12 全精度）
+- ✅ 笛卡尔点到点（`ik_selection` 多解筛选 + `goto_xyz.py`）
+- ✅ 外部代码审查 R1~R8、R11（点对点路径）已修复并加回归测试

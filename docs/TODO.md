@@ -102,9 +102,42 @@ launch/
 
 ---
 
+### C-41 BT.CPP 决策层接入（**依赖已就绪，待实现**）
+
+2026-11-22 在 `~/BehaviorTree/BC_ws` 验证通过：
+
+| 组件 | 版本 | 状态 |
+|---|---|---|
+| BehaviorTree.CPP | **4.11.1** | ✅ 编译通过（关掉 tools/examples/tests） |
+| behaviortree_ros2 | 0.3.0（humble 分支） | ✅ **在 Jazzy + v4.11.1 上编译通过** |
+| btcpp_ros2_interfaces | 0.3.0 | ✅ |
+
+**两个踩过的坑（记下来免得重踩）**
+1. `git clone -b ros2` 会失败 —— **该分支不存在**。远端只有
+   `bug_fix/registry`、`humble`、`issue_76` 三个分支，克隆别加 `-b`。
+2. GitHub 直连在本机不稳（DNS 把 github.com 解析成 57.155.223.240，
+   连接被重置）。`--depth 1` + 重试可过。
+   Tsinghua TUNA **不镜像 GitHub 仓库**（只镜像 apt/pypi/conda）。
+3. BT.CPP 本体要关 4 个可选组件才能编（缺 flatbuffers / nlohmann_json）：
+   `-DBTCPP_BUILD_TOOLS=OFF -DBTCPP_EXAMPLES=OFF -DBUILD_TESTING=OFF`
+   Groot2（cppzmq）与 SQLite 日志（libsqlite3-dev）都可用。
+
+**第一阶段范围（不依赖 MoveIt C-30）**
+- 包 `mini_manip_bt`：`FollowJointTrajectory`（走现有 JTC）、
+  `IsJointLimitOK`、`IsEmergencyStopInactive`、`SwitchController`
+- 树形：`ReactiveSequence( 条件…, FollowJointTrajectory )`
+  —— 必须用 Reactive 版，否则前置条件只查一次，长动作套不住安全监控
+- `onHalted()` 里必须 `cancel_goal_async()`，否则 BT 以为中断了、JTC 还在跑
+- tick 10–20 Hz，独立非实时线程（MultiThreadedExecutor + 单独 callback group）
+
+**第二阶段**：MoveIt 就绪后加 `MoveToPose`（`RosActionNode<MoveGroup>`）
+**第三阶段**：把 `goto_xyz.py` 的"选解 → 轨迹 → 执行 → 验收"整体搬进 BT
+
+---
+
 ## P1 — 功能推进
 
-### C-29 安全壳阈值实测标定（刚加，值是拍出来的）
+### C-37a 安全壳阈值实测标定（刚加，值是拍出来的）
 - `hw_arm_hardware.cpp` 的 `stale_timeout_ms_ = 200`：要看真实丢帧分布
 - `hw_arm_controllers.yaml` 的 `constraints`（trajectory 0.09 / goal 0.05 rad）：
   按真机重复性收紧

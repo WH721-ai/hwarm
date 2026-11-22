@@ -124,6 +124,9 @@ def parse_cli_output(text: str):
             cur["q"] = [float(x) for x in s.split("[", 1)[1].rstrip("]").split(",")]
         elif s.startswith("qd:") and cur is not None:
             cur["qd"] = [float(x) for x in s.split("[", 1)[1].rstrip("]").split(",")]
+        elif s.startswith("q:") and "[" in s:
+            # ik_cli 的顶层字段：q: [..]
+            meta["q"] = [float(x) for x in s.split("[", 1)[1].rstrip("]").split(",")]
     if cur is not None:
         waypoints.append(cur)
     return meta, waypoints
@@ -142,6 +145,13 @@ def main() -> int:
                     help="路点间隔 (s)，默认 0.05")
     ap.add_argument("--duration-per-meter", type=float, default=None,
                     help="按距离给时长（秒/米），给了就覆盖 --duration")
+    ap.add_argument("--engine", choices=["ik", "rmrc"], default="ik",
+                    help="ik=点到点（IK 一次，JTC 关节插值，默认）；"
+                         "rmrc=笛卡尔直线（走 plan_line_cli）")
+    ap.add_argument("--tol", type=float, default=1e-6,
+                    help="IK 收敛阈值 (m/rad)，默认 1e-6")
+    ap.add_argument("--max-joint-jump", type=float, default=2.5,
+                    help="单轴关节跳变上限 (rad)，超过判为解跳分支")
     ap.add_argument("--dry-run", action="store_true", help="只规划，不发命令")
     ap.add_argument("--yes", "-y", action="store_true", help="跳过确认")
     args = ap.parse_args()
@@ -231,43 +241,90 @@ def main() -> int:
         print("  ⚠️ 目标与当前位置几乎重合，无需运动")
         return 0
 
-    # ── 调用 CLI 生成轨迹 ──
-    cmd = [cli, "--urdf", urdf, "--start", ",".join(f"{v:.9f}" for v in q_now),
-           "--target", " ".join(f"{v:.9f}" for v in (
-               p_target[0], p_target[1], p_target[2], quat[0], quat[1], quat[2], quat[3])),
-           "--frame", args.frame,
-           "--duration", f"{duration:.4f}", "--sample", f"{args.sample:.4f}"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    if proc.returncode != 0 and not proc.stdout:
-        print("❌ plan_line_cli 失败：")
-        print(proc.stderr[:800])
-        return 3
-
-    meta, wps = parse_cli_output(proc.stdout)
-    if meta.get("ok") is not True:      # 注意：解析成的是 bool，不要再和字符串比
-        err = meta.get("error", "未知原因")
-        print(f"❌ 规划失败：{err}")
-        print(f"   （position_error={meta.get('position_error')}, "
-              f"sigma_ratio={meta.get('min_sigma_ratio')}）")
-        if meta.get("failure_q_deg"):
-            print(f"   失败的位形 q(度) = {meta['failure_q_deg']}")
-        if "奇异" in err:
-            print()
-            print("   ⚠️ 这是【真实的奇异/病态位形】，不是误报：")
-            print("      · 本臂 j2/j3/j5 三轴平行，q5 接近 0° 时腕部奇异")
-            print("      · 当前位形里 joint4 又贴着限位，笛卡尔解会把它推出去")
-            print("   ✅ 解法：先用关节空间点动挪到「舒适位形」，再走直线：")
-            print("        python3 jog.py 0 0.8 0.4 0 0.6 0 --abs --time 8")
-            print("      该位形 σ_min/σ_max ≈ 0.06（现在的约 30 倍）")
-        elif "限位" in err:
-            print()
-            print("   ⚠️ 轨迹中途撞到关节限位：目标可能超出工作空间，或需要换构型")
-        return 3
-
-    print(f"  ✅ 规划成功：{len(wps)} 个路点，"
-          f"终点残差 {float(meta.get('position_error', 0))*1000:.3f} mm / "
-          f"{float(meta.get('orientation_error', 0)):.2e} rad")
-    print(f"     最小 σ_min/σ_max = {meta.get('min_sigma_ratio')}")
+    # ── 生成关节路点 ──
+    wps = []
+    if args.engine == "ik":
+        # ① 点到点：只调一次 IK（复用 kinematics.cpp 的 solveIK），
+        #    然后发两点轨迹，段内由 JTC 做关节空间插值。
+        ik_cli = find_cli().replace("plan_line_cli", "ik_cli")
+        if not os.path.isfile(ik_cli):
+            print(f"❌ 找不到 ik_cli：{ik_cli}\n"
+                  f"   先编译：colcon build --symlink-install --packages-select hw_arm_algorithms")
+            return 2
+        cmd = [ik_cli, "--urdf", urdf, "--frame", args.frame,
+               "--seed", ",".join(f"{v:.9f}" for v in q_now),
+               "--target", " ".join(f"{v:.9f}" for v in (
+                   p_target[0], p_target[1], p_target[2],
+                   quat[0], quat[1], quat[2], quat[3])),
+               "--tol", f"{args.tol:.1e}"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        meta_ik, _ = parse_cli_output(proc.stdout)
+        if meta_ik.get("ok") is not True:
+            print("❌ IK 失败（目标可能不可达 / 超限位 / 起始就在奇异点）")
+            print(f"   position_error={meta_ik.get('position_error')}  "
+                  f"orientation_error={meta_ik.get('orientation_error')}  "
+                  f"limited={meta_ik.get('limited')}")
+            if proc.stderr:
+                print("   " + proc.stderr.strip()[:300])
+            return 3
+        q_sol = np.array([float(x) for x in meta_ik["q"]])
+        dq = q_sol - np.array(q_now)
+        if np.abs(dq).max() > args.max_joint_jump:
+            k = int(np.argmax(np.abs(dq)))
+            print(f"❌ IK 解与当前位形差太多（joint{k+1} 要动 "
+                  f"{math.degrees(dq[k]):+.1f}° > "
+                  f"{math.degrees(args.max_joint_jump):.0f}° 上限）")
+            print("   常见原因：解跳到了另一个构型分支（肘上/肘下）。")
+            print("   建议：先用 jog.py 分几步接近，或用更小的位移")
+            return 3
+        sig = float(meta_ik.get("sigma_ratio", 0) or 0)
+        print(f"  ✅ IK 收敛：{meta_ik.get('iterations')} 次迭代，"
+              f"残差 {float(meta_ik.get('position_error', 0))*1000:.4f} mm / "
+              f"{float(meta_ik.get('orientation_error', 0)):.1e} rad")
+        print(f"     目标关节角 = {np.round(np.degrees(q_sol), 1)} 度")
+        print(f"     关节跳变   = {np.round(np.degrees(dq), 1)} 度（最大 "
+              f"{np.degrees(np.abs(dq).max()):.1f}°）")
+        if sig < 2e-3:
+            print(f"     ⚠️ 该解接近奇异（σ_min/σ_max={sig:.5f}），执行时可能不跟手")
+        wps = [{"t": 0.0, "q": [float(x) for x in q_now], "qd": [0.0] * 6},
+               {"t": float(duration), "q": [float(x) for x in q_sol], "qd": [0.0] * 6}]
+    else:
+        # ② 笛卡尔直线：走 plan_line_cli（RMRC），保留为扩展
+        cmd = [cli, "--urdf", urdf, "--start", ",".join(f"{v:.9f}" for v in q_now),
+               "--target", " ".join(f"{v:.9f}" for v in (
+                   p_target[0], p_target[1], p_target[2],
+                   quat[0], quat[1], quat[2], quat[3])),
+               "--frame", args.frame,
+               "--duration", f"{duration:.4f}", "--sample", f"{args.sample:.4f}"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0 and not proc.stdout:
+            print("❌ plan_line_cli 失败：")
+            print(proc.stderr[:800])
+            return 3
+        meta, wps = parse_cli_output(proc.stdout)
+        if meta.get("ok") is not True:
+            err = meta.get("error", "未知原因")
+            print(f"❌ 规划失败：{err}")
+            print(f"   （position_error={meta.get('position_error')}, "
+                  f"sigma_ratio={meta.get('min_sigma_ratio')}）")
+            if meta.get("failure_q_deg"):
+                print(f"   失败的位形 q(度) = {meta['failure_q_deg']}")
+            if "奇异" in err:
+                print()
+                print("   ⚠️ 这是【真实的奇异/病态位形】，不是误报：")
+                print("      · 本臂 j2/j3/j5 三轴平行，q5 接近 0° 时腕部奇异")
+                print("      · 当前位形里 joint4 又贴着限位，笛卡尔解会把它推出去")
+                print("   ✅ 解法：先用关节空间点动挪到「舒适位形」，再走直线：")
+                print("        python3 jog.py 0 0.8 0.4 0 0.6 0 --abs --time 8")
+                print("      该位形 σ_min/σ_max ≈ 0.06（现在的约 30 倍）")
+            elif "限位" in err:
+                print()
+                print("   ⚠️ 轨迹中途撞到关节限位：目标可能超出工作空间，或需要换构型")
+            return 3
+        print(f"  ✅ 规划成功：{len(wps)} 个路点，"
+              f"终点残差 {float(meta.get('position_error', 0))*1000:.3f} mm / "
+              f"{float(meta.get('orientation_error', 0)):.2e} rad")
+        print(f"     最小 σ_min/σ_max = {meta.get('min_sigma_ratio')}")
 
     if args.dry_run:
         print("\n  （--dry-run：不发送命令）")

@@ -91,6 +91,10 @@ target_link_libraries(bench_gravity ${PROJECT_NAME})
 add_executable(plan_line_cli tools/plan_line_cli.cpp)
 target_link_libraries(plan_line_cli ${PROJECT_NAME})
 
+# 命令行：目标位姿 → IK 解（笛卡尔"点到点"用，只封装 kinematics.cpp）
+add_executable(ik_cli tools/ik_cli.cpp)
+target_link_libraries(ik_cli ${PROJECT_NAME})
+
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 

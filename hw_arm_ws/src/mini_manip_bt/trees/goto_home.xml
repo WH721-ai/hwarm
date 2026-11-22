@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!--
+  最小行为树：移到 home 位形
+    1. 只用一个自定义节点 FollowJointTrajectory
+    2. 目标关节角写在 XML 里（以后改成从 Blackboard / 话题取）
+-->
+<root BTCPP_format="4">
+  <BehaviorTree ID="GotoHome">
+    <Sequence>
+      <!-- target: 6 个关节角，用分号分隔（BT.CPP 的 vector<double> 语法） -->
+      <FollowJointTrajectory target="0;0.8;0.4;0;0.6;0"
+                             duration="4.0"
+                             action_name="/hw_arm_controller/follow_joint_trajectory"/>
+    </Sequence>
+  </BehaviorTree>
+</root>

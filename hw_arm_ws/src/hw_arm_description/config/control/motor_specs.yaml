@@ -29,13 +29,14 @@ motors:
     master_id: 0x11
     direction: +1
     # ── 说明书 ──
+    operating_voltage: 24.0        # ★ 实际使用 24V（说明书另有 48V 列）
     nameplate_voltage: 48.0        # V（支持 24~48V 宽压）
     rated_phase_current: 23.5      # A
     peak_phase_current: 95.0       # A
     t_rated: 40.0                  # N·m  ★ 说明书 40（原代码写 20，偏低）
     t_peak: 120.0                  # N·m  ★ 说明书 120（原代码写 200，那是协议量程）
-    rated_speed_rpm: 100.0         # @48V（24V 时 70）
-    no_load_speed_rpm: 200.0       # @48V（24V 时 100）
+    rated_speed_rpm: 70.0          # ★ @24V（48V 时 100）
+    no_load_speed_rpm: 100.0       # ★ @24V（48V 时 200）
     gear_ratio: 10.0
     pole_pairs: 21
     phase_inductance_uH: 85.0
@@ -47,7 +48,8 @@ motors:
     encoder_count: 2
     # ── 固件实读 ──
     p_max: 12.5                    # RID 21
-    v_max: 25.0                    # RID 22
+    v_max: 25.0
+    v_max_physical: 10.47   # ★ 24V 空载 100 rpm 换算；RID22 是 25                    # RID 22
     t_protocol: 200.0              # RID 23 ⚠️ > t_peak(120)，下发会被饱和
     # ── 待实测 ──
     rotor_inertia: null            # kg·m²，读 RID 12（见末尾）
@@ -58,6 +60,7 @@ motors:
     can_id: 0x02
     master_id: 0x12
     direction: -1
+    operating_voltage: 24.0        # ★ 实际使用 24V
     nameplate_voltage: 24.0        # 支持 24~48V
     rated_phase_current: 20.8      # A @24V（48V 时 22）
     peak_phase_current: 36.0       # A @24V（48V 时 70）
@@ -77,6 +80,7 @@ motors:
     encoder_resolution_deg: 0.09
     p_max: 12.566
     v_max: 40.0
+    v_max_physical: 27.23   # ★ 24V 空载 260 rpm 换算；RID22 是 40
     t_protocol: 70.0               # ⚠️ > t_peak(45)
     rotor_inertia: null
     armature: null
@@ -86,13 +90,14 @@ motors:
     can_id: 0x03
     master_id: 0x13
     direction: -1
+    operating_voltage: 24.0        # ★ 实际使用 24V
     nameplate_voltage: 24.0        # 24/48V 双规格
     rated_phase_current: 4.11      # A
     peak_phase_current: 19.85      # A
     t_rated: 12.0                  # N·m  ★ 说明书 12（原代码写 9，偏低）
     t_peak: 40.0                   # N·m  ★ 说明书 40（原代码写 27）
     rated_speed_rpm: 36.0
-    no_load_speed_rpm: 56.0        # @24V（48V 时 112）
+    no_load_speed_rpm: 56.0        # ★ @24V（48V 时 112）
     gear_ratio: 40.0
     pole_pairs: 14
     phase_inductance_uH: 290.0
@@ -104,6 +109,7 @@ motors:
     encoder_count: 2
     p_max: 12.5
     v_max: 10.0
+    v_max_physical: 5.86   # ★ 24V 空载 56 rpm 换算；RID22 是 10
     t_protocol: 28.0               # ⚠️ < t_peak(40)，协议先饱和
     rotor_inertia: null
     armature: null
@@ -113,13 +119,14 @@ motors:
     can_id: 0x04
     master_id: 0x14
     direction: +1
+    operating_voltage: 24.0        # ★ 实际使用 24V
     nameplate_voltage: 24.0        # 24/48V 双规格
     rated_phase_current: 4.9       # A @24V（48V 时 4.8）
     peak_phase_current: 20.0       # A
     t_rated: 3.5                   # N·m ✓
     t_peak: 12.5                   # N·m  ★ 说明书 12.5（原代码写 10）
     rated_speed_rpm: 120.0
-    no_load_speed_rpm: 200.0       # @24V（48V 时 450）
+    no_load_speed_rpm: 200.0       # ★ @24V（48V 时 450）
     gear_ratio: 10.0
     pole_pairs: 14
     phase_inductance_uH: 320.0
@@ -131,6 +138,7 @@ motors:
     encoder_count: 2
     p_max: 12.5
     v_max: 30.0
+    v_max_physical: 20.94   # ★ 24V 空载 200 rpm 换算；RID22 是 30
     t_protocol: 10.0               # < t_peak(12.5)，协议先饱和
     rotor_inertia: null
     armature: null
@@ -140,6 +148,7 @@ motors:
     can_id: 0x05
     master_id: 0x15
     direction: +1
+    operating_voltage: 24.0        # ★ 实际使用 24V
     nameplate_voltage: 24.0
     rated_phase_current: 2.5       # A
     peak_phase_current: 7.5        # A
@@ -158,6 +167,7 @@ motors:
     encoder_count: 2
     p_max: 12.5
     v_max: 30.0
+    v_max_physical: 20.94   # ★ 24V 空载 200 rpm 换算；RID22 是 30
     t_protocol: 10.0               # ⚠️ > t_peak(7)
     rotor_inertia: null
     armature: null
@@ -167,6 +177,7 @@ motors:
     can_id: 0x06
     master_id: 0x16
     direction: +1
+    operating_voltage: 24.0        # ★ 实际使用 24V
     nameplate_voltage: 24.0
     rated_phase_current: 2.5
     peak_phase_current: 7.5
@@ -185,6 +196,7 @@ motors:
     encoder_count: 2
     p_max: 12.5
     v_max: 30.0
+    v_max_physical: 20.94   # ★ 24V 空载 200 rpm 换算；RID22 是 30
     t_protocol: 10.0               # ⚠️ > t_peak(7)
     rotor_inertia: null
     armature: null

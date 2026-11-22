@@ -34,9 +34,11 @@
 //   n_candidates: 3
 //   n_accepted: 1
 //   message: "..."
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -49,20 +51,37 @@
 
 namespace {
 
-std::vector<double> parseNumbers(const std::string& text) {
-  std::vector<double> out;
+// ★ R11：把 "1x" / "oops" / "inf" 这类输入判为错误，而不是静默变 0 / NaN。
+//   std::atof("oops")=0、std::atof("1x")=1 —— 会让"写错一个参数"变成"用错的目标"。
+bool parseNumber(const std::string& s, double& out) {
+  if (s.empty()) return false;
+  char* end = nullptr;
+  errno = 0;
+  const double v = std::strtod(s.c_str(), &end);
+  if (end == s.c_str() || *end != '\0') return false;   // 必须整串消费
+  if (errno == ERANGE || !std::isfinite(v)) return false;
+  out = v;
+  return true;
+}
+
+// 返回 false 表示**有 token 解析失败**（不是"空列表"）
+bool parseNumbers(const std::string& text, std::vector<double>& out) {
+  out.clear();
   std::string cur;
+  bool ok = true;
   for (char c : text + ",") {
     if (c == ',' || c == ' ' || c == ';' || c == '\t') {
       if (!cur.empty()) {
-        out.push_back(std::atof(cur.c_str()));
+        double v = 0.0;
+        if (!parseNumber(cur, v)) ok = false;
+        out.push_back(v);
         cur.clear();
       }
     } else {
       cur.push_back(c);
     }
   }
-  return out;
+  return ok;
 }
 
 void usage() {
@@ -96,6 +115,7 @@ int main(int argc, char** argv) {
   double margin = 0.087;
   double sigma_min = 2e-3;
   double duration = 3.0;
+  std::string vmax_s, amax_s;
   bool verbose = false;
 
   for (int i = 1; i < argc; ++i) {
@@ -105,16 +125,18 @@ int main(int argc, char** argv) {
     else if (a == "--seed") seed_s = next();
     else if (a == "--target") target_s = next();
     else if (a == "--frame") frame_name = next();
-    else if (a == "--tol") tol = std::atof(next().c_str());
+    else if (a == "--tol") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--tol 不是合法数字\n"); return 2; } tol = v; }
     else if (a == "--max-iter") max_iter = std::atoi(next().c_str());
-    else if (a == "--damping") damping = std::atof(next().c_str());
+    else if (a == "--damping") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--damping 不是合法数字\n"); return 2; } damping = v; }
     else if (a == "--seeds") num_seeds = std::atoi(next().c_str());
     else if (a == "--solutions") max_solutions = std::atoi(next().c_str());
-    else if (a == "--max-jump") max_jump = std::atof(next().c_str());
-    else if (a == "--max-norm") max_norm = std::atof(next().c_str());
-    else if (a == "--margin") margin = std::atof(next().c_str());
-    else if (a == "--sigma") sigma_min = std::atof(next().c_str());
-    else if (a == "--duration") duration = std::atof(next().c_str());
+    else if (a == "--max-jump") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--max-jump 不是合法数字\n"); return 2; } max_jump = v; }
+    else if (a == "--max-norm") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--max-norm 不是合法数字\n"); return 2; } max_norm = v; }
+    else if (a == "--margin") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--margin 不是合法数字\n"); return 2; } margin = v; }
+    else if (a == "--sigma") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--sigma 不是合法数字\n"); return 2; } sigma_min = v; }
+    else if (a == "--duration") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--duration 不是合法数字\n"); return 2; } duration = v; }
+    else if (a == "--vmax") vmax_s = next();
+    else if (a == "--amax") amax_s = next();
     else if (a == "--verbose") verbose = true;
     else if (a == "-h" || a == "--help") { usage(); return 0; }
     else { std::fprintf(stderr, "未知参数: %s\n", a.c_str()); usage(); return 2; }
@@ -125,8 +147,15 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  const std::vector<double> qv = parseNumbers(seed_s);
-  const std::vector<double> tv = parseNumbers(target_s);
+  std::vector<double> qv, tv;
+  if (!parseNumbers(seed_s, qv)) {
+    std::fprintf(stderr, "--seed 含非法数字：%s\n", seed_s.c_str());
+    return 2;
+  }
+  if (!parseNumbers(target_s, tv)) {
+    std::fprintf(stderr, "--target 含非法数字：%s\n", target_s.c_str());
+    return 2;
+  }
   if (qv.size() != 6) {
     std::fprintf(stderr, "--seed 需要 6 个数，实际 %zu\n", qv.size());
     return 2;
@@ -161,9 +190,20 @@ int main(int argc, char** argv) {
   Eigen::VectorXd q_now(6);
   for (int i = 0; i < 6; ++i) q_now[i] = qv[static_cast<size_t>(i)];
 
+  // ★ R11：NaN 会让 |norm-1| > 1e-3 为 false（NaN 比较恒假），必须先判有限
   Eigen::Quaterniond quat(tv[6], tv[3], tv[4], tv[5]);  // (w, x, y, z)
-  if (std::abs(quat.norm() - 1.0) > 1e-3) {
-    std::fprintf(stderr, "❌ 四元数未归一化 (norm=%.6f)\n", quat.norm());
+  if (!(std::isfinite(quat.w()) && std::isfinite(quat.x()) &&
+        std::isfinite(quat.y()) && std::isfinite(quat.z()))) {
+    std::fprintf(stderr, "❌ 四元数含 NaN/Inf\n");
+    return 2;
+  }
+  const double qn = quat.norm();
+  if (!(qn > 1e-6)) {
+    std::fprintf(stderr, "❌ 四元数模长为 0\n");
+    return 2;
+  }
+  if (std::abs(qn - 1.0) > 1e-3) {
+    std::fprintf(stderr, "❌ 四元数未归一化 (norm=%.6f)\n", qn);
     return 2;
   }
   quat.normalize();
@@ -186,6 +226,32 @@ int main(int argc, char** argv) {
   opt.filter.min_sigma_ratio = sigma_min;
   opt.filter.duration = duration;
   opt.keep_diagnostics = verbose;
+
+  // ★ R2：速度/加速度判据在 ik_selection 里靠"向量非空"决定是否启用，
+  //   不传就等于**静默关闭**两条保护。这里改为**必填**，缺失直接报错。
+  std::vector<double> vmax_v, amax_v;
+  if (vmax_s.empty() || amax_s.empty()) {
+    std::fprintf(stderr,
+        "❌ 必须提供 --vmax 与 --amax（6 轴，见 config/control/motor_specs.yaml）\n");
+    return 2;
+  }
+  if (!parseNumbers(vmax_s, vmax_v) || vmax_v.size() != 6) {
+    std::fprintf(stderr, "❌ --vmax 需要 6 个合法数字\n");
+    return 2;
+  }
+  if (!parseNumbers(amax_s, amax_v) || amax_v.size() != 6) {
+    std::fprintf(stderr, "❌ --amax 需要 6 个合法数字\n");
+    return 2;
+  }
+  opt.filter.max_joint_velocity = Eigen::Map<Eigen::VectorXd>(vmax_v.data(), 6);
+  opt.filter.max_joint_accel = Eigen::Map<Eigen::VectorXd>(amax_v.data(), 6);
+  for (int i = 0; i < 6; ++i) {
+    if (!(opt.filter.max_joint_velocity[i] > 0.0) ||
+        !(opt.filter.max_joint_accel[i] > 0.0)) {
+      std::fprintf(stderr, "❌ --vmax/--amax 第 %d 项必须为正\n", i + 1);
+      return 2;
+    }
+  }
 
   // ── ★ 唯一一次计算调用 ──
   const auto res =

@@ -93,16 +93,6 @@ Eigen::VectorXd wrapToward(const pinocchio::Model& model,
   return out;
 }
 
-// 绕圈展开后的逐轴差值（±π 归一到最短方向）
-Eigen::VectorXd wrappedDelta(const Eigen::VectorXd& q,
-                             const Eigen::VectorXd& q_ref) {
-  Eigen::VectorXd d(q.size());
-  for (int i = 0; i < q.size(); ++i) {
-    d[i] = std::remainder(q[i] - q_ref[i], 2.0 * M_PI);
-  }
-  return d;
-}
-
 // 把 "value ≤ limit" 的判据统一成一句话，方便汇总
 std::string ratioText(const char* name, double value, double limit) {
   char buf[160];
@@ -181,8 +171,18 @@ SelectionResult selectSolution(const RobotModel& model, RobotWorkspace& ws,
       continue;
     }
 
-    // ③ 关节跳变（用 ±π 归一后的差值，兼容 joint1/joint6 的绕圈）
-    const Eigen::VectorXd dq = wrappedDelta(ev.q, q_now);
+    // ③ 关节跳变 —— ★ R1 修复
+    //
+    // ev.q 已经过 wrapToward：在限位内选了"离 q_now 最近"的等价表示，
+    // 所以 ev.q − q_now **就是电机实际要转的角度**，绝不能再取余。
+    //
+    // 反例（修复前）：q_now.j1=+3.0，候选 −3.0，+2π 越界故 wrapToward 仍给 −3.0；
+    //   remainder(−3−3, 2π)=+0.283 → 判定"小跳变"通过，
+    //   但实际要转 −6.0 rad（343.8°）。这就是"过滤看到的行程 ≠ 实际行程"。
+    //
+    // wrappedDelta 只适用于"驱动是连续坐标、执行器按最短角走"的情形；
+    // 本工程的 DM 电机是有界绝对角（±π / ±2π），不满足。
+    const Eigen::VectorXd dq = ev.q - q_now;
     ev.max_joint_jump = dq.cwiseAbs().maxCoeff();
     ev.travel_norm = dq.norm();
     if (ev.max_joint_jump > filter.max_joint_jump) {

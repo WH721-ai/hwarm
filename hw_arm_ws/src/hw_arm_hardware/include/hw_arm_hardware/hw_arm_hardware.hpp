@@ -125,6 +125,19 @@ class HwArmHW : public hardware_interface::SystemInterface {
   // 比不补偿更危险。先看数字对不对，再真正施加。
   bool motors_ready_ = false;   // on_activate 里确认能读到反馈后才为 true
 
+  // ── 逐轴反馈时效（R7）──────────────────────────────────────
+  //
+  // 为什么必须逐轴：CAN 上其他节点还在 ACK 时，掉线的那一个轴不一定触发
+  // bus-off；它只是**不再回状态帧**，而 Motor 缓存里仍是最后一次的值。
+  // 于是 read() 会把旧位置当新位置发布，JTC 看到"没在动但也没出错"，
+  // 最后可能"时间到了 → 报 SUCCEEDED"。这是最隐蔽的假成功。
+  //
+  // 阈值取 200 ms：250 Hz 下相当于 50 个周期没回包，
+  // 远大于正常抖动（实测丢帧 10~20% 也能在这个窗口内补上）。
+  int64_t stale_timeout_ms_ = 200;
+  std::vector<bool> axis_stale_latched_;   // 每轴一个，避免刷屏
+
+
   // ── 零重力（拖动示教）模式
   //
   // 和「重力补偿」是**两件事**，容易混淆：

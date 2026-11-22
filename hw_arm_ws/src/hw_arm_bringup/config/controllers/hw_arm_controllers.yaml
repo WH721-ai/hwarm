@@ -36,6 +36,27 @@ hw_arm_controller:
     open_loop_control: false
     allow_integration_in_goal_trajectories: true
 
+    # ── ★ R8：到位容差 ─────────────────────────────────────
+    #
+    # 不配这两项时 JTC 的默认值是 **0**，而源码写着
+    #   "A tolerance value of zero means that no tolerance will be applied"
+    #   （tolerances.hpp:48-50；309-311 行只有 >0 才参与判定）
+    # 于是"时间到了 + 速度接近零"就算成功 —— 关节根本没跟上也报 SUCCEEDED。
+    #
+    # 数值按当前真机精度定：先给 3°(goal) / 5°(path) 这种宽松值，
+    # 实测重复性后再收紧；不要照抄别人的 0.01 rad。
+    #   trajectory = 运动过程中允许的跟踪误差
+    #   goal       = 终点允许的稳态误差
+    constraints:
+      stopped_velocity_tolerance: 0.02   # rad/s，判定"停住"的速度阈值
+      goal_time: 1.0                     # s，到点后允许再调多久
+      joint1: { trajectory: 0.09, goal: 0.05 }
+      joint2: { trajectory: 0.09, goal: 0.05 }
+      joint3: { trajectory: 0.09, goal: 0.05 }
+      joint4: { trajectory: 0.09, goal: 0.05 }
+      joint5: { trajectory: 0.09, goal: 0.05 }
+      joint6: { trajectory: 0.09, goal: 0.05 }
+
 hw_arm_forward_position_controller:
   ros__parameters:
     joints:

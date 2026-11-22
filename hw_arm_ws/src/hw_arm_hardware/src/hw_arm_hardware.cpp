@@ -486,21 +486,47 @@ CallbackReturn HwArmHW::on_activate(const rclcpp_lifecycle::State& /*prev*/) {
   // 之前直接 enable_all() 的问题：此刻还没收到任何状态帧，Motor 里的 position 还是 0，
   // 于是"把命令初始化为当前位置"等于把命令初始化成 0 —— 一使能电机就被驱动到 0 位。
   // 实测就是这么把 6 台电机拉回 0 的。
-  bool got_feedback = false;
-  for (int attempt = 0; attempt < 20 && !got_feedback; ++attempt) {
+  // ★ R6：逐轴校验，而不是"任一轴有响应就使能全部"。
+  //
+  // 旧逻辑 `position != 0 || error_code != 0` 有三个问题：
+  //   ① 任一轴响应就 got_feedback=true，其余轴可能一次都没回包；
+  //   ② 未响应轴的缓存是 0，使能后会拿到**基于假零位**的命令；
+  //   ③ 位置合法的 0 会被当成"没反馈"，而故障码非 0 反而被当成"有反馈"。
+  //
+  // 新逻辑：每个要用的轴都必须 ever_responded() + 未过期 + 无故障码。
+  std::vector<bool> axis_ok(active_idx_.size(), false);
+  bool all_ready = false;
+  for (int attempt = 0; attempt < 20 && !all_ready; ++attempt) {
     openarm_->refresh_all();
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     openarm_->recv_all(5000);
+
     const auto& ms = openarm_->get_arm().get_motors();
-    for (size_t k = 0; k < active_idx_.size() && k < ms.size(); ++k) {
-      // 位置恰好为 0 且错误码为 0 → 大概率还没收到过帧
-      if (ms[k].get_position() != 0.0 || ms[k].get_error_code() != 0) {
-        got_feedback = true;
-        break;
+    all_ready = true;
+    for (size_t k = 0; k < active_idx_.size(); ++k) {
+      bool ok = false;
+      if (k < ms.size()) {
+        const auto& st = openarm_->get_arm().get_link_stats(static_cast<int>(k));
+        const int err = ms[k].get_error_code();
+        ok = st.ever_responded() &&
+             !st.is_stale(std::chrono::milliseconds(stale_timeout_ms_)) &&
+             (err < 0x8);
       }
+      axis_ok[k] = ok;
+      if (!ok) all_ready = false;
     }
   }
-  if (!got_feedback) {
+
+  if (!all_ready) {
+    // 逐轴点名，指出到底哪几轴没就绪
+    for (size_t k = 0; k < axis_ok.size(); ++k) {
+      if (axis_ok[k]) continue;
+      const size_t j = active_idx_[k];
+      RCLCPP_ERROR(logger(), "  轴 %zu (%s) 未就绪：无反馈 / 反馈过期 / 有故障码",
+                   j, k < joint_names_.size() ? joint_names_[j].c_str() : "?");
+    }
+  }
+  if (!all_ready) {
     // ⚠️ 以前这里 return ERROR —— 然后 controller_manager 会抛
     //    std::runtime_error("Failed to set the initial state ... to active")，
     //    整个 ros2_control_node **SIGABRT 退出**（exit code -6），
@@ -514,7 +540,7 @@ CallbackReturn HwArmHW::on_activate(const rclcpp_lifecycle::State& /*prev*/) {
     motors_ready_ = false;
     log_bus_status(openarm_->get_bus_status(), "on_activate");
     RCLCPP_ERROR(logger(),
-                 "读不到任何电机反馈（%zu 台，%d 次尝试 / %.1f 秒）。"
+                 "%zu 台电机中有轴未就绪（%d 次尝试 / %.1f 秒）。"
                  "**电机保持失能**，不会动。",
                  active_idx_.size(), 20, 1.0);
     RCLCPP_ERROR(logger(),
@@ -612,9 +638,37 @@ return_type HwArmHW::read(const rclcpp::Time& /*time*/, const rclcpp::Duration& 
   }
 
   // ③ 电机级：把状态按 active_idx_ 映射回关节下标
+  //
+  // ★ R7：先查**逐轴反馈时效**再采信数据。
+  //   只查总线状态不够：CAN 上其他节点还在 ACK 时，掉线的那个轴不会触发
+  //   bus-off，它的 Motor 缓存里仍是旧值 —— 旧位置会被当成新位置发布。
+  if (axis_stale_latched_.size() != active_idx_.size()) {
+    axis_stale_latched_.assign(active_idx_.size(), false);
+  }
+
   const auto& motors = openarm_->get_arm().get_motors();
-  for (size_t k = 0; k < active_idx_.size() && k < motors.size(); ++k) {
+  bool any_stale = false;
+  for (size_t k = 0; k < active_idx_.size(); ++k) {
     const size_t j = active_idx_[k];
+    const bool has = (k < motors.size());
+    const bool stale =
+        !has || openarm_->get_arm()
+                    .get_link_stats(static_cast<int>(k))
+                    .is_stale(std::chrono::milliseconds(stale_timeout_ms_));
+
+    if (stale) {
+      any_stale = true;
+      if (!axis_stale_latched_[k]) {
+        axis_stale_latched_[k] = true;
+        RCLCPP_ERROR(logger(),
+                     "%s 反馈过期（>%ld ms 没有新的状态帧）。"
+                     "该轴的 pos/vel/tau 状态不再可信。",
+                     joint_names_[j].c_str(), (long)stale_timeout_ms_);
+      }
+      continue;  // 不更新该轴状态，保留旧值仅供观察，但整体会返回 ERROR
+    }
+    axis_stale_latched_[k] = false;
+
     // 电机坐标系 → 关节坐标系（C-02）
     const double d = direction_[j];
     pos_states_[j] = d * motors[k].get_position();
@@ -628,6 +682,12 @@ return_type HwArmHW::read(const rclcpp::Time& /*time*/, const rclcpp::Duration& 
                             joint_names_[j].c_str(), err);
       return return_type::ERROR;
     }
+  }
+
+  if (any_stale) {
+    // 交给 ros2_control 的错误链：控制器 INACTIVE → 硬件 ERROR → on_error，
+    // on_deactivate 里会把电机失能（不会带着假状态继续跑）。
+    return return_type::ERROR;
   }
   return return_type::OK;
 }

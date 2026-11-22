@@ -237,4 +237,31 @@ TEST_F(SelectionTest, BestIKFindsNearestSolution) {
   }
 }
 
+// ⑧ R1 回归：取余后的"短距离"必须被拒
+//    q_now.j1=+3.0，候选 -3.0；+2π 越界，wrapToward 仍给 -3.0。
+//    修复前：remainder(-6, 2π)=0.283 → 误判为小跳变，通过。
+//    修复后：|q_exec − q_now| = 6.0 rad → 被"单轴跳变"拒绝。
+TEST_F(SelectionTest, RejectsWrappedShortDistanceR1) {
+  Eigen::VectorXd q_now(6), cand(6);
+  q_now << 3.0, 0.8, 0.4, 0.0, 0.6, 0.0;
+  cand  << -3.0, 0.8, 0.4, 0.0, 0.6, 0.0;
+
+  IKResult res;
+  res.solutions = {makeSol(cand)};
+
+  SolutionFilterOptions fo;
+  fo.max_joint_jump = 0.5;
+  fo.min_limit_margin = 0.087;
+  fo.min_sigma_ratio = 0.0;      // 排除奇异判据干扰
+  fo.path_samples = 5;
+  const auto sel = hw_arm_algorithms::selectSolution(*model_, *ws_, frame_, res,
+                                                    q_now, fo);
+  ASSERT_EQ(sel.candidates.size(), 1u);
+  EXPECT_GT(sel.candidates[0].max_joint_jump, 5.9)
+      << "实际行程应当是 6 rad，不是 0.283 rad";
+  EXPECT_FALSE(sel.candidates[0].accepted);
+  EXPECT_NE(sel.candidates[0].reject_reason.find("跳变"), std::string::npos)
+      << sel.candidates[0].reject_reason;
+}
+
 }  // namespace

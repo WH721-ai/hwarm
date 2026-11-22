@@ -1,0 +1,219 @@
+# 电机规格表（单一数据源）
+# ─────────────────────────────────────────────────────────────
+# 来源：
+#   ① 说明书 PDF（/mnt/hgfs/VMshare/）
+#        DM-J10010L-2EC减速电机说明书V1.1.pdf
+#        DM-J6216P-2EC 减速电机说明书V1.5 2026-10-26.pdf
+#        DM-J4340-2ECV1.1减速电机说明书 V1.2.pdf
+#        DM-J4310P-2EC减速电机说明书V1.1 定稿(2).pdf
+#        DM-J4310-2EC V1.1减速电机说明书V1.0.pdf
+#   ② 电机固件寄存器实读（read_motor_registers.py，2026-11-22）
+#        RID 20 Gr / 21 PMAX / 22 VMAX / 23 TMAX
+#
+# ⚠️ 三个"最大力矩"不是一回事，别混：
+#     额定 t_rated     能长期连续输出（不烧电机）      ← 选型 / 加速度上限用这个
+#     峰值 t_peak      短时间能冲到的                   ← 过载判断
+#     协议 t_protocol  固件 RID23，MIT 12bit 字段的量程  ← 下发的编码上限
+#   实际出力上限 = min(t_peak, t_protocol)
+#
+# ⚠️ 所有力矩 / 位置 / 速度都是**输出轴（减速后）**口径，
+#    这是 DM 说明书明确写的（DM6216P 说明书第 468~474 行）。
+#
+# ⚠️ rotor_inertia / armature 暂时留空 —— 见文件末尾说明。
+
+motors:
+
+  joint1:
+    model: DM-J10010L-2EC
+    can_id: 0x01
+    master_id: 0x11
+    direction: +1
+    # ── 说明书 ──
+    nameplate_voltage: 48.0        # V（支持 24~48V 宽压）
+    rated_phase_current: 23.5      # A
+    peak_phase_current: 95.0       # A
+    t_rated: 40.0                  # N·m  ★ 说明书 40（原代码写 20，偏低）
+    t_peak: 120.0                  # N·m  ★ 说明书 120（原代码写 200，那是协议量程）
+    rated_speed_rpm: 100.0         # @48V（24V 时 70）
+    no_load_speed_rpm: 200.0       # @48V（24V 时 100）
+    gear_ratio: 10.0
+    pole_pairs: 21
+    phase_inductance_uH: 85.0
+    phase_resistance_ohm: 0.11
+    diameter_mm: 120.0
+    height_mm: 53.0
+    mass_g: 1372.0
+    encoder_bits: 14
+    encoder_count: 2
+    # ── 固件实读 ──
+    p_max: 12.5                    # RID 21
+    v_max: 25.0                    # RID 22
+    t_protocol: 200.0              # RID 23 ⚠️ > t_peak(120)，下发会被饱和
+    # ── 待实测 ──
+    rotor_inertia: null            # kg·m²，读 RID 12（见末尾）
+    armature: null                 # kg·m²，折算到关节侧 = Gr²·rotor_inertia
+
+  joint2:
+    model: DM-J6216P-2EC
+    can_id: 0x02
+    master_id: 0x12
+    direction: -1
+    nameplate_voltage: 24.0        # 支持 24~48V
+    rated_phase_current: 20.8      # A @24V（48V 时 22）
+    peak_phase_current: 36.0       # A @24V（48V 时 70）
+    t_rated: 10.0                  # N·m ✓ 与现有一致
+    t_peak: 45.0                   # N·m ✓
+    rated_speed_rpm: 200.0
+    no_load_speed_rpm: 260.0
+    gear_ratio: 16.0
+    pole_pairs: 10
+    phase_inductance_uH: 184.0
+    phase_resistance_ohm: 0.16     # 实读 Rs=0.1701，吻合
+    diameter_mm: 67.0
+    height_mm: 62.5
+    mass_g: 740.0
+    encoder_bits: 15
+    encoder_count: 2
+    encoder_resolution_deg: 0.09
+    p_max: 12.566
+    v_max: 40.0
+    t_protocol: 70.0               # ⚠️ > t_peak(45)
+    rotor_inertia: null
+    armature: null
+
+  joint3:
+    model: DM-J4340-2EC V1.1
+    can_id: 0x03
+    master_id: 0x13
+    direction: -1
+    nameplate_voltage: 24.0        # 24/48V 双规格
+    rated_phase_current: 4.11      # A
+    peak_phase_current: 19.85      # A
+    t_rated: 12.0                  # N·m  ★ 说明书 12（原代码写 9，偏低）
+    t_peak: 40.0                   # N·m  ★ 说明书 40（原代码写 27）
+    rated_speed_rpm: 36.0
+    no_load_speed_rpm: 56.0        # @24V（48V 时 112）
+    gear_ratio: 40.0
+    pole_pairs: 14
+    phase_inductance_uH: 290.0
+    phase_resistance_ohm: 0.00072  # 说明书写 0.72mΩ，疑似笔误（同族都是几百 mΩ）
+    diameter_mm: 57.0
+    height_mm: 53.3
+    mass_g: 362.0
+    encoder_bits: 16
+    encoder_count: 2
+    p_max: 12.5
+    v_max: 10.0
+    t_protocol: 28.0               # ⚠️ < t_peak(40)，协议先饱和
+    rotor_inertia: null
+    armature: null
+
+  joint4:
+    model: DM-J4310P-2EC
+    can_id: 0x04
+    master_id: 0x14
+    direction: +1
+    nameplate_voltage: 24.0        # 24/48V 双规格
+    rated_phase_current: 4.9       # A @24V（48V 时 4.8）
+    peak_phase_current: 20.0       # A
+    t_rated: 3.5                   # N·m ✓
+    t_peak: 12.5                   # N·m  ★ 说明书 12.5（原代码写 10）
+    rated_speed_rpm: 120.0
+    no_load_speed_rpm: 200.0       # @24V（48V 时 450）
+    gear_ratio: 10.0
+    pole_pairs: 14
+    phase_inductance_uH: 320.0
+    phase_resistance_ohm: 0.58
+    diameter_mm: 57.0
+    height_mm: 49.3
+    mass_g: 325.0
+    encoder_bits: 16
+    encoder_count: 2
+    p_max: 12.5
+    v_max: 30.0
+    t_protocol: 10.0               # < t_peak(12.5)，协议先饱和
+    rotor_inertia: null
+    armature: null
+
+  joint5:
+    model: DM-J4310-2EC V1.1
+    can_id: 0x05
+    master_id: 0x15
+    direction: +1
+    nameplate_voltage: 24.0
+    rated_phase_current: 2.5       # A
+    peak_phase_current: 7.5        # A
+    t_rated: 3.0                   # N·m ✓
+    t_peak: 7.0                    # N·m ✓
+    rated_speed_rpm: 120.0
+    no_load_speed_rpm: 200.0
+    gear_ratio: 10.0
+    pole_pairs: 14
+    phase_inductance_uH: 340.0
+    phase_resistance_ohm: 0.65
+    diameter_mm: 57.0
+    height_mm: 46.0
+    mass_g: 300.0
+    encoder_bits: 14
+    encoder_count: 2
+    p_max: 12.5
+    v_max: 30.0
+    t_protocol: 10.0               # ⚠️ > t_peak(7)
+    rotor_inertia: null
+    armature: null
+
+  joint6:
+    model: DM-J4310-2EC V1.1
+    can_id: 0x06
+    master_id: 0x16
+    direction: +1
+    nameplate_voltage: 24.0
+    rated_phase_current: 2.5
+    peak_phase_current: 7.5
+    t_rated: 3.0
+    t_peak: 7.0
+    rated_speed_rpm: 120.0
+    no_load_speed_rpm: 200.0
+    gear_ratio: 10.0
+    pole_pairs: 14
+    phase_inductance_uH: 340.0
+    phase_resistance_ohm: 0.65
+    diameter_mm: 57.0
+    height_mm: 46.0
+    mass_g: 300.0
+    encoder_bits: 14
+    encoder_count: 2
+    p_max: 12.5
+    v_max: 30.0
+    t_protocol: 10.0               # ⚠️ > t_peak(7)
+    rotor_inertia: null
+    armature: null
+
+# ─────────────────────────────────────────────────────────────
+# 转子惯量：说明书里**没有**
+# ─────────────────────────────────────────────────────────────
+# 五份说明书的技术参数表都没有"转动惯量"这一项。
+# 唯一的来源是固件寄存器：
+#
+#     RID 11  Damp      电机粘滞系数   RO   float
+#     RID 12  Inertia   电机转动惯量   RO   float
+#
+# （DM6216P 说明书 V1.5 第 787~793 行、DM4310P 第 638 行、
+#   DM4340 第 652 行、DM10010L 第 473 行 都列出了这两个 RID）
+#
+# ⚠️ 但 read_motor_registers.py 的显示精度是 %.4f，
+#    2026-11-22 实读得到：
+#         ID1 = 0.0005      ID2~ID6 = 0.0000
+#    转子惯量量级约 1e-5 ~ 1e-3 kg·m²，**1e-5 会被四舍五入成 0.0000**。
+#    → 必须用全精度重新读一次（CAN 恢复后）：
+#
+#        python3 tools/dump_register_f32.py --ids 1,2,3,4,5,6 --rid 12
+#
+# 单位推断：说明书写"位置/速度/力矩都是输出轴口径"，
+#   若 RID 12 同口径（kg·m² @ 输出轴），则 armature = rotor_inertia 直接可用；
+#   若为电机侧，则 armature = Gr² · rotor_inertia。
+#   实读后再确认。
+#
+# 拿不到时的兜底估计（来自 hw_arm_mujoco/scripts/urdf_to_mjcf.py:73 的 armature）：
+#     j1 0.010  j2 0.010  j3 0.160  j4 0.010  j5 0.010  j6 0.010
+#   其中 DM4310/DM4340 那几项是 OpenArm 的实测值，j1/j2 是占位。

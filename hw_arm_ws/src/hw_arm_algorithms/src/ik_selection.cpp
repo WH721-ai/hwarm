@@ -65,6 +65,44 @@ double minLimitMargin(const RobotModel& model, const Eigen::VectorXd& q) {
 
 namespace {
 
+// 同一个物理姿态可以写成 q + k·2π。
+//   · joint1(±π)、joint6(±2π) 这类行程 ≥ 2π 的轴，IK 可能给出"多绕了一圈"的表示
+//   · 直接按数值差算跳变，会把 0.08 rad 的小动作误判成 6.2 rad 的大跳变
+// 这里对每根轴尝试 q + k·2π（k = −2..2），挑**在限位内且离 q_ref 最近**的那个。
+Eigen::VectorXd wrapToward(const pinocchio::Model& model,
+                           const Eigen::VectorXd& q,
+                           const Eigen::VectorXd& q_ref) {
+  const Eigen::VectorXd& lo = model.lowerPositionLimit;
+  const Eigen::VectorXd& hi = model.upperPositionLimit;
+  Eigen::VectorXd out = q;
+  for (int i = 0; i < q.size(); ++i) {
+    double best = q[i];
+    double best_d = std::abs(q[i] - q_ref[i]);
+    for (int k = -2; k <= 2; ++k) {
+      if (k == 0) continue;
+      const double cand = q[i] + k * 2.0 * M_PI;
+      if (cand < lo[i] - 1e-9 || cand > hi[i] + 1e-9) continue;
+      const double d = std::abs(cand - q_ref[i]);
+      if (d < best_d) {
+        best_d = d;
+        best = cand;
+      }
+    }
+    out[i] = best;
+  }
+  return out;
+}
+
+// 绕圈展开后的逐轴差值（±π 归一到最短方向）
+Eigen::VectorXd wrappedDelta(const Eigen::VectorXd& q,
+                             const Eigen::VectorXd& q_ref) {
+  Eigen::VectorXd d(q.size());
+  for (int i = 0; i < q.size(); ++i) {
+    d[i] = std::remainder(q[i] - q_ref[i], 2.0 * M_PI);
+  }
+  return d;
+}
+
 // 把 "value ≤ limit" 的判据统一成一句话，方便汇总
 std::string ratioText(const char* name, double value, double limit) {
   char buf[160];
@@ -111,7 +149,8 @@ SelectionResult selectSolution(const RobotModel& model, RobotWorkspace& ws,
     const IKSolution& sol = candidates.solutions[i];
     CandidateEvaluation ev;
     ev.index = static_cast<int>(i);
-    ev.q = sol.q;
+    // ★ 先绕圈展开到离 q_now 最近的等价表示，避免把"多绕 2π"误判成大跳变
+    ev.q = wrapToward(model.pin(), sol.q, q_now);
     ev.converged = sol.converged;
     ev.limited = sol.limited;
     ev.position_error = sol.position_error;
@@ -142,8 +181,8 @@ SelectionResult selectSolution(const RobotModel& model, RobotWorkspace& ws,
       continue;
     }
 
-    // ③ 关节跳变
-    const Eigen::VectorXd dq = ev.q - q_now;
+    // ③ 关节跳变（用 ±π 归一后的差值，兼容 joint1/joint6 的绕圈）
+    const Eigen::VectorXd dq = wrappedDelta(ev.q, q_now);
     ev.max_joint_jump = dq.cwiseAbs().maxCoeff();
     ev.travel_norm = dq.norm();
     if (ev.max_joint_jump > filter.max_joint_jump) {
@@ -301,6 +340,73 @@ SelectionResult selectSolution(const RobotModel& model, RobotWorkspace& ws,
                 std::to_string(out.candidates.size()) + "，选中 #" +
                 std::to_string(best) + "（score=" + std::to_string(best_score) +
                 "）";
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────
+// ★ 一步到位：枚举 → 过滤 → 打分 → 唯一最优解
+// ─────────────────────────────────────────────────────────────
+IKSelectionResult selectBestIK(const RobotModel& model, RobotWorkspace& ws,
+                               pinocchio::FrameIndex frame,
+                               const pinocchio::SE3& target,
+                               const Eigen::VectorXd& q_now,
+                               const IKSelectionOptions& options) {
+  IKSelectionResult out;
+  const int nv = model.nv();
+
+  if (!model.valid()) {
+    out.message = "模型未加载";
+    return out;
+  }
+  if (q_now.size() != nv || !q_now.allFinite()) {
+    out.message = "q_now 非法";
+    return out;
+  }
+
+  // ① 枚举：把 q_now 作为 seed_hint 传进去，
+  //    保证"离当前构型最近的那个解"一定在候选里（方案 A）。
+  const IKResult all =
+      solveIKMultiSeed(model, ws, frame, target, &q_now, options.ik);
+  out.n_candidates = all.n_solutions();
+
+  if (out.n_candidates == 0) {
+    out.message = "IK 没有找到任何可行解（目标不可达或全部超限位）";
+    return out;
+  }
+
+  // ② 过滤 + 打分（全部在 selectSolution 里）
+  const SelectionResult sel = selectSolution(model, ws, frame, all, q_now,
+                                             options.filter, options.weights);
+  out.n_accepted = sel.n_accepted;
+
+  if (!sel.ok) {
+    out.message = sel.message;
+    if (options.keep_diagnostics) out.candidates = sel.candidates;
+    return out;
+  }
+
+  // ③ 把选中解的指标摊平到结果上
+  out.ok = true;
+  out.q = sel.q;
+  out.source_index = sel.index;
+  out.message = sel.message;
+  if (options.keep_diagnostics) out.candidates = sel.candidates;
+
+  for (const auto& ev : sel.candidates) {
+    if (ev.index != sel.index) continue;
+    out.score = ev.score;
+    out.position_error = ev.position_error;
+    out.orientation_error = ev.orientation_error;
+    out.travel_norm = ev.travel_norm;
+    out.max_joint_jump = ev.max_joint_jump;
+    out.min_limit_margin = ev.min_limit_margin;
+    out.sigma_ratio = ev.sigma_ratio;
+    out.path_sigma_ratio = ev.path_sigma_ratio;
+    out.peak_velocity_ratio = ev.peak_velocity_ratio;
+    out.peak_accel_ratio = ev.peak_accel_ratio;
+    out.gravity_ratio = ev.gravity_ratio;
+    break;
+  }
   return out;
 }
 

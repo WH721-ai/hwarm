@@ -150,7 +150,7 @@ def main() -> int:
                          "rmrc=笛卡尔直线（走 plan_line_cli）")
     ap.add_argument("--tol", type=float, default=1e-6,
                     help="IK 收敛阈值 (m/rad)，默认 1e-6")
-    ap.add_argument("--max-joint-jump", type=float, default=2.5,
+    ap.add_argument("--max-joint-jump", type=float, default=0.5,
                     help="单轴关节跳变上限 (rad)，超过判为解跳分支")
     ap.add_argument("--dry-run", action="store_true", help="只规划，不发命令")
     ap.add_argument("--yes", "-y", action="store_true", help="跳过确认")
@@ -278,14 +278,19 @@ def main() -> int:
             print("   建议：先用 jog.py 分几步接近，或用更小的位移")
             return 3
         sig = float(meta_ik.get("sigma_ratio", 0) or 0)
-        print(f"  ✅ IK 收敛：{meta_ik.get('iterations')} 次迭代，"
-              f"残差 {float(meta_ik.get('position_error', 0))*1000:.4f} mm / "
+        psig = float(meta_ik.get("path_sigma_ratio", 0) or 0)
+        print(f"  ✅ 选解成功：候选 {meta_ik.get('n_candidates')} 个 → "
+              f"通过 {meta_ik.get('n_accepted')} 个，score="
+              f"{float(meta_ik.get('score', 0) or 0):.3f}")
+        print(f"     残差 {float(meta_ik.get('position_error', 0))*1000:.4f} mm / "
               f"{float(meta_ik.get('orientation_error', 0)):.1e} rad")
         print(f"     目标关节角 = {np.round(np.degrees(q_sol), 1)} 度")
         print(f"     关节跳变   = {np.round(np.degrees(dq), 1)} 度（最大 "
               f"{np.degrees(np.abs(dq).max()):.1f}°）")
-        if sig < 2e-3:
-            print(f"     ⚠️ 该解接近奇异（σ_min/σ_max={sig:.5f}），执行时可能不跟手")
+        print(f"     奇异度     = 终点 {sig:.4f} / 路径 {psig:.4f}"
+              f"（阈值 0.002）")
+        if psig and psig < 2e-3:
+            print(f"     ⚠️ 运动路径穿过奇异区（路径 σ={psig:.5f}），执行时可能不跟手")
         wps = [{"t": 0.0, "q": [float(x) for x in q_now], "qd": [0.0] * 6},
                {"t": float(duration), "q": [float(x) for x in q_sol], "qd": [0.0] * 6}]
     else:

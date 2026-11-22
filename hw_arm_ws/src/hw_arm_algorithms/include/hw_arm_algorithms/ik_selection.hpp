@@ -124,7 +124,56 @@ struct SelectionResult {
 };
 
 // ─────────────────────────────────────────────────────────────
-/// 在 IKResult 的多解里挑一个"运动学最优解"
+// ★ 一步到位：枚举 → 过滤 → 打分 → 返回**唯一最优解**
+//
+// 调用方（CLI / ROS 节点 / Python 胶水）不需要关心中间过程：
+// 只给"目标位姿 + 当前关节角 + 参数"，拿回一个 q 和 ok。
+// 全部计算都在 kinematics.cpp（solveIKMultiSeed）与本文件里完成。
+// ─────────────────────────────────────────────────────────────
+struct IKSelectionOptions {
+  IKOptions ik;                        ///< 求解参数（种子数/迭代/阻尼/tol）
+  SolutionFilterOptions filter;        ///< 硬过滤 + 速度加速度阈值
+  SelectionWeights weights;            ///< 打分权重
+  bool keep_diagnostics = false;       ///< 是否保留逐候选评估（调试用）
+};
+
+struct IKSelectionResult {
+  bool ok = false;
+  Eigen::VectorXd q;        ///< ★ 唯一最优解（ok=true 时有效）
+  double score = 0.0;
+
+  // ── 诊断摘要（都来自被选中的那个解）──
+  int source_index = -1;    ///< 它在 IK 候选里的下标
+  int n_candidates = 0;     ///< IK 枚举出几个解
+  int n_accepted = 0;       ///< 通过硬过滤几个
+  double position_error = 0.0;
+  double orientation_error = 0.0;
+  double travel_norm = 0.0;
+  double max_joint_jump = 0.0;
+  double min_limit_margin = 0.0;
+  double sigma_ratio = 0.0;
+  double path_sigma_ratio = 0.0;
+  double peak_velocity_ratio = 0.0;
+  double peak_accel_ratio = 0.0;
+  double gravity_ratio = 0.0;
+
+  std::string message;                      ///< 人读的一句话
+  std::vector<CandidateEvaluation> candidates;  ///< 仅 keep_diagnostics=true 时填
+};
+
+/// 枚举全部可行解 → 硬过滤 → 加权打分 → 返回最优的那一个
+///
+/// @param target 目标位姿（世界系）
+/// @param q_now  当前关节角：既作为 seed_hint（保证"最近解"在候选里），
+///               也用于跳变 / 路径奇异 / 行程判定
+IKSelectionResult selectBestIK(const RobotModel& model, RobotWorkspace& ws,
+                               pinocchio::FrameIndex frame,
+                               const pinocchio::SE3& target,
+                               const Eigen::VectorXd& q_now,
+                               const IKSelectionOptions& options = {});
+
+// ─────────────────────────────────────────────────────────────
+/// 低层入口：在**已有的**多解里挑一个（不给则自己枚举时用上面的）
 ///
 /// @param candidates solveIKMultiSeed 的结果
 /// @param q_now      当前关节角（用于跳变、路径奇异、行程）

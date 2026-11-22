@@ -18,6 +18,7 @@
 
 #include "hw_arm_algorithms/data.hpp"
 #include "hw_arm_algorithms/ik_selection.hpp"
+#include "hw_arm_algorithms/kinematics.hpp"
 #include "hw_arm_algorithms/model.hpp"
 
 namespace {
@@ -194,6 +195,46 @@ TEST_F(SelectionTest, AllRejectedGivesMessage) {
   EXPECT_FALSE(sel.ok);
   EXPECT_FALSE(sel.message.empty());
   EXPECT_EQ(sel.n_accepted, 0);
+}
+
+// ⑦ 端到端：selectBestIK 必须能找到"离当前构型最近"的那个解
+//    这是方案 A（seed_hint）的核心价值：多起点枚举不能漏掉近解。
+TEST_F(SelectionTest, BestIKFindsNearestSolution) {
+  // 目标 = 当前位形 FK 后沿 +x 平移 20 mm
+  pinocchio::forwardKinematics(model_->pin(), ws_->pin(), q_good_);
+  pinocchio::updateFramePlacement(model_->pin(), ws_->pin(), frame_);
+  pinocchio::SE3 target = ws_->pin().oMf[frame_];
+  target.translation() += Eigen::Vector3d(0.02, 0.0, 0.0);
+
+  // 先看单种子（seed = q_good）能解出什么 —— 这是"最近的解"的基准
+  hw_arm_algorithms::IKOptions io;
+  io.position_tol = 1e-6;
+  io.orientation_tol = 1e-6;
+  const IKSolution single =
+      hw_arm_algorithms::solveIK(*model_, *ws_, frame_, target, q_good_, io);
+  ASSERT_TRUE(single.converged) << "单种子应当能解出来";
+  const double ref_jump = (single.q - q_good_).cwiseAbs().maxCoeff();
+  EXPECT_LT(ref_jump, 0.2) << "单种子解应当离当前构型很近";
+
+  // 再走完整链路
+  hw_arm_algorithms::IKSelectionOptions opt;
+  opt.ik = io;
+  opt.keep_diagnostics = true;
+  const auto res = hw_arm_algorithms::selectBestIK(*model_, *ws_, frame_,
+                                                  target, q_good_, opt);
+
+  // 打印候选，方便排查
+  for (const auto& c : res.candidates) {
+    std::printf("    [#%d] accepted=%d limited=%d jump=%.3f σ=%.4f :: %s\n",
+                c.index, static_cast<int>(c.accepted), static_cast<int>(c.limited),
+                c.max_joint_jump, c.sigma_ratio, c.reject_reason.c_str());
+  }
+
+  EXPECT_TRUE(res.ok) << res.message;
+  if (res.ok) {
+    const double jump = (res.q - q_good_).cwiseAbs().maxCoeff();
+    EXPECT_LT(jump, 0.2) << "选出来的解应当也是近解（不应跳到别的分支）";
+  }
 }
 
 }  // namespace

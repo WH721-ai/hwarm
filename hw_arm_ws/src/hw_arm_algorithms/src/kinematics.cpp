@@ -80,6 +80,22 @@ void dlsStep(const RobotModel& model, RobotWorkspace& ws,
   }
 }
 
+/// 解是否**最终停在**关节限位上（不是"迭代过程中有没有被钳制过"）
+///
+/// 为什么要有这个区分：dlsStep 一旦钳制就会把 limited 置 true 且不再复位，
+/// 于是"中途撞了一下限位、随后又收敛到内部"的解也会被标成 limited。
+/// 多起点枚举里这类解一旦先入表，去重时就会把后来那个**干净的解**挡掉，
+/// 表现为"最近解明明解出来了却不在候选里"。
+bool sitsOnJointLimit(const pinocchio::Model& model,
+                      const Eigen::VectorXd& q, double eps = 1e-5) {
+  const int n = std::min<int>(q.size(), model.lowerPositionLimit.size());
+  for (int i = 0; i < n; ++i) {
+    if (q[i] <= model.lowerPositionLimit[i] + eps) return true;
+    if (q[i] >= model.upperPositionLimit[i] - eps) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────
@@ -154,7 +170,8 @@ IKSolution solveIK(const RobotModel& model, RobotWorkspace& ws,
 
     if (pe < options.position_tol && oe < options.orientation_tol) {
       sol.converged = true;
-      sol.limited = limited;
+      // ★ 用"最终解是否贴在限位上"判定，而不是"中途有没有钳制过"
+      sol.limited = sitsOnJointLimit(model.pin(), sol.q);
       return sol;
     }
 
@@ -171,7 +188,7 @@ IKSolution solveIK(const RobotModel& model, RobotWorkspace& ws,
   }
   splitPoseError(current, target, sol.position_error, sol.orientation_error);
   sol.iterations = options.max_iterations;
-  sol.limited = limited;
+  sol.limited = sitsOnJointLimit(model.pin(), sol.q);
   sol.converged = (sol.position_error < options.position_tol &&
                    sol.orientation_error < options.orientation_tol);
   return sol;
@@ -190,13 +207,15 @@ IKResult solveIKFromSeeds(const RobotModel& model, RobotWorkspace& ws,
       continue;
     }
 
-    // 去重
+    // 去重：同一点上如果已存的是"贴限位"的解、新来的是干净解，就用新的替换
     bool duplicate = false;
-    for (const auto& existing : result.solutions) {
-      if (jointDistance(existing.q, sol.q) < options.dedup_tolerance) {
-        duplicate = true;
-        break;
+    for (auto& existing : result.solutions) {
+      if (jointDistance(existing.q, sol.q) >= options.dedup_tolerance) continue;
+      if (existing.limited && !sol.limited) {
+        existing = sol;  // 用更干净的表示替换
       }
+      duplicate = true;
+      break;
     }
     if (duplicate) {
       continue;

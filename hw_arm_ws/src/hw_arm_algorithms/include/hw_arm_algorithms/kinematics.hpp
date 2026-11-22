@@ -128,11 +128,17 @@ IKSolution solveIK(const RobotModel& model, RobotWorkspace& ws,
 
 /// 多起点枚举 IK（适合"到达某位姿"：拿全部可行解再按代价挑选）
 ///
-/// 种子在关节限位内均匀采样（固定随机种子 → 可复现）。
+/// 种子 = [限位中点] + [seed_hint（若给）] + [限位内均匀随机（固定种子 → 可复现）]。
 /// 只返回：限位内 + 残差 < tol 的解，并自动去重。
+///
+/// @param seed_hint 额外种子的提示（通常是当前关节角 q_prev）。
+///        传了它就能保证"离当前构型最近的那个解"一定出现在候选里 ——
+///        否则纯随机种子可能漏掉它，选解时就会跳到另一个构型分支。
+///        传 nullptr（默认）时行为与以前完全一致。
 IKResult solveIKMultiSeed(const RobotModel& model, RobotWorkspace& ws,
                           pinocchio::FrameIndex frame,
                           const pinocchio::SE3& target,
+                          const Eigen::VectorXd* seed_hint = nullptr,
                           const IKOptions& options = IKOptions{});
 
 /// 从给定的一组种子逐个求解并去重

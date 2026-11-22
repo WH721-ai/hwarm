@@ -38,6 +38,7 @@ add_library(${PROJECT_NAME}
   src/gravity.cpp    # computeGravity
   src/kinematics.cpp # FK / Jacobian / IK / 奇异度
   src/cartesian_trajectory.cpp  # 笛卡尔直线 + RMRC（离线生成路点）
+  src/ik_selection.cpp          # IK 多解筛选（硬过滤 + 加权打分）
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -148,6 +149,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_kinematics test/test_kinematics.cpp)
   target_link_libraries(test_kinematics ${PROJECT_NAME})
   target_compile_definitions(test_kinematics PRIVATE
+    HW_ARM_DEFAULT_URDF="${HW_ARM_TEST_URDF}")
+
+  # IK 多解筛选
+  ament_add_gtest(test_ik_selection test/test_ik_selection.cpp)
+  target_link_libraries(test_ik_selection ${PROJECT_NAME})
+  target_compile_definitions(test_ik_selection PRIVATE
     HW_ARM_DEFAULT_URDF="${HW_ARM_TEST_URDF}")
 
   # 笛卡尔直线轨迹（RMRC）

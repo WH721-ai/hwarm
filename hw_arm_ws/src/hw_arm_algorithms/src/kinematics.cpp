@@ -214,20 +214,30 @@ IKResult solveIKFromSeeds(const RobotModel& model, RobotWorkspace& ws,
 IKResult solveIKMultiSeed(const RobotModel& model, RobotWorkspace& ws,
                           pinocchio::FrameIndex frame,
                           const pinocchio::SE3& target,
+                          const Eigen::VectorXd* seed_hint,
                           const IKOptions& options) {
   const int nv = model.nv();
   const Eigen::VectorXd& lo = model.pin().lowerPositionLimit;
   const Eigen::VectorXd& hi = model.pin().upperPositionLimit;
+
+  const bool use_hint =
+      (seed_hint != nullptr) && (seed_hint->size() == nv) && seed_hint->allFinite();
 
   // 固定随机种子 → 结果可复现
   std::mt19937 rng(options.random_seed);
   std::uniform_real_distribution<double> dist(0.0, 1.0);
 
   std::vector<Eigen::VectorXd> seeds;
-  seeds.reserve(options.num_seeds);
+  seeds.reserve(options.num_seeds + (use_hint ? 1 : 0));
 
   // 第 0 个种子：限位中点（球腕一般从这里就能收敛）
   seeds.push_back((lo + hi) / 2.0);
+
+  // ★ 方案 A：先把"当前构型"塞进去，保证"最近解"一定在候选里。
+  //   否则纯随机种子可能漏掉它，多解筛选时就会跳到另一个构型分支。
+  if (use_hint) {
+    seeds.push_back(*seed_hint);
+  }
 
   for (int s = 1; s < options.num_seeds; ++s) {
     Eigen::VectorXd q(nv);

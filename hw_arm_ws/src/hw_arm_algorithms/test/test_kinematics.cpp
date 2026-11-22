@@ -173,8 +173,9 @@ TEST_F(KinematicsTest, IkRespectsJointLimits) {
   Eigen::VectorXd seed = Eigen::VectorXd::Zero(model_->nq());
   IKOptions opt;
   opt.num_seeds = 24;
+  // 第 5 个参数是 seed_hint（方案 A 新增），这里不传当前构型
   const IKResult res = hw_arm_algorithms::solveIKMultiSeed(
-      *model_, *ws_, ee_, target, opt);
+      *model_, *ws_, ee_, target, nullptr, opt);
 
   ASSERT_TRUE(res.ok()) << "多起点应当至少找到一组解";
   const auto& lo = model_->pin().lowerPositionLimit;
@@ -205,8 +206,9 @@ TEST_F(KinematicsTest, IkMultiSeedDeduplicates) {
 
   IKOptions opt;
   opt.num_seeds = 24;
+  // 第 5 个参数是 seed_hint（方案 A 新增），这里不传当前构型
   const IKResult res = hw_arm_algorithms::solveIKMultiSeed(
-      *model_, *ws_, ee_, target, opt);
+      *model_, *ws_, ee_, target, nullptr, opt);
   ASSERT_TRUE(res.ok());
 
   // 任意两组解之间的距离必须大于去重阈值

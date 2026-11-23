@@ -39,6 +39,9 @@ add_library(${PROJECT_NAME}
   src/kinematics.cpp # FK / Jacobian / IK / 奇异度
   src/cartesian_trajectory.cpp  # 笛卡尔直线 + RMRC（离线生成路点）
   src/ik_selection.cpp          # IK 多解筛选（硬过滤 + 加权打分）
+  src/collision_model.cpp       # 碰撞几何模型（凸包，建一次）
+  src/collision_robot.cpp       # 自碰撞检测
+  src/collision_world.cpp       # 桌面约束
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -155,6 +158,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_ik_selection test/test_ik_selection.cpp)
   target_link_libraries(test_ik_selection ${PROJECT_NAME})
   target_compile_definitions(test_ik_selection PRIVATE
+    HW_ARM_DEFAULT_URDF="${HW_ARM_TEST_URDF}")
+
+  # 碰撞检测
+  ament_add_gtest(test_collision test/test_collision.cpp)
+  target_link_libraries(test_collision ${PROJECT_NAME})
+  target_compile_definitions(test_collision PRIVATE
     HW_ARM_DEFAULT_URDF="${HW_ARM_TEST_URDF}")
 
   # 笛卡尔直线轨迹（RMRC）

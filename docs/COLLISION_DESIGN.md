@@ -645,3 +645,112 @@ STL 头 80 字节 + uint32 三角面数 + 50 字节/面
 ⚠️ 本工程 STL 文件头不是 "solid" 开头（是 "StackForce CAD Importer local STL"），
    但**是二进制格式** —— 不要用 "solid" 判断 ASCII/二进制
 ```
+
+---
+
+## 九、实现结果（2026-11-22 已完成）
+
+### 9.1 交付物
+
+| 文件 | 内容 |
+|---|---|
+| `tools/gen_collision_hulls.py` | 从 STL 生成凸包（scipy），输出 `collision_hulls.hpp` |
+| `include/.../collision_hulls.hpp` | 自动生成：7 个连杆共 1707 顶点 / 3386 三角形 |
+| `include/.../collision_model.hpp` + `src/collision_model.cpp` | 建几何（mesh→凸包）、碰撞对（去相邻 15 对） |
+| `include/.../collision_robot.hpp` + `src/collision_robot.cpp` | `checkSelfCollision` / `minSelfDistance` |
+| `include/.../collision_world.hpp` + `src/collision_world.cpp` | 桌面不等式 `checkTable` |
+| `test/test_collision.cpp` | 11 个用例（7 单元 + 4 集成），全过 |
+| `ik_selection` 扩展 | 新增 `collision_check` 回调 + 路径/终点两级过滤 |
+
+### 9.2 ⚠️ 实现中发现的与设计假设不符之处
+
+#### ① coal 编译时**没有** `COAL_HAS_QHULL`
+
+```cpp
+#ifdef COAL_HAS_QHULL   // ← 实测未定义
+```
+
+⇒ `ConvexBase::convexHull()` 不可用，凸包必须**离线生成**。
+⇒ 增加 `tools/gen_collision_hulls.py`（scipy ConvexHull），产出一个头文件。
+⇒ `coal::Convex<Triangle>` 的三角形是**索引三元组**（`vids[3]`），不是三个 3D 点
+（用 `Triangle(a,b,c)` 传 Vec3 会编译不过）。
+
+#### ② AABB Box **完全不可用**（实测 100% 误报）
+
+```
+box : 100.0% 碰撞率   ← 15 对几乎全碰
+mesh: 1.6%
+```
+
+原因：本臂的连杆不是长方体，AABB 比实际形状大得多
+（link2 的 AABB = 352×236×157 mm，凸包体积只有 2064 cm³）。
+
+⚠️ 另一个坑：**`coal::Box(x,y,z)` 的参数是"全长"，不是半长**
+（内部存 `halfSide = side/2`）。写错会让 box 只有一半大 → **漏检**。
+
+⇒ **取消原设计的"L1 Box 粗筛 + L2 凸包精查"两级策略**，
+改为**单级凸包**（实测 9.1 µs，已经很便宜）。
+
+#### ③ home 位形的间隙只有 **3.5 mm**
+
+```
+mesh 精确值：link3 ↔ link5 = 3.73 mm
+凸包版      ：            3.52 mm
+```
+
+⇒ **`margin` 不能设大**：> 3.5 mm 会让 home 自己报碰撞。
+⇒ 默认 `margin = 0`；若要安全裕度，取 **2 mm**。
+
+### 9.3 实测性能（本机）
+
+| 函数 | 耗时 | 说明 |
+|---|---|---|
+| `checkSelfCollision` | **9.1 µs/次** | 15 对，early-exit |
+| `minSelfDistance` | **35.9 µs/次** | 查全部对 + 距离 |
+| `checkTable` | ~2 µs/次 | 1 个关键点 |
+| 对比：mesh 版 | 2293 µs/次 | 慢 250 倍 |
+
+**20 点路径 + 终点 = 21 次 × 9.1 µs ≈ 0.19 ms** —— 与设计预估一致。
+
+### 9.4 自碰撞率对照
+
+| 表示 | 碰撞率（1500 个随机构型） |
+|---|---|
+| mesh（精确） | 1.6% |
+| 凸包 | 2.2% |
+
+凸包略高 ✓ 符合"凸包 ≥ mesh"的预期，且**不漏检**。
+
+### 9.5 接入方式（已实现）
+
+`ik_selection` 用 `std::function` 注入，避免决策层依赖几何实现：
+
+```cpp
+SolutionFilterOptions fo;
+fo.collision_check = [&](const Eigen::VectorXd& q) {
+  if (checkSelfCollision(*cm, q).colliding) return true;      // 撞了
+  if (!checkTable(*model, *ws, q, key, topt)) return true;    // 穿桌面
+  return false;
+};
+fo.require_collision_check = true;   // ← 忘了传回调会明确报错，不静默跳过
+```
+
+过滤链中的位置：**路径奇异 → 碰撞（路径逐点 + 终点）→ 速度/加速度**。
+
+### 9.6 测试覆盖（11 个用例）
+
+单元（7）：
+1. `PairCountAfterAdjacentRemoval` —— 必须是 15（不是 0、不是 21）
+2. `HomeIsCollisionFree`
+3. `FoldedBackCollides` —— joint2=172°/joint3=0° 必须检出 base_link 碰撞
+4. `ClearanceAtHomeIsSmallButPositive` —— home 间隙 3.5 mm 量级
+5. `MarginIsRespected`
+6. `TablePassesAboveTable`
+7. `TableRejectsWhenTooLow`
+
+集成（4）：
+8. 不给回调 = 不检查（行为兼容）
+9. `require_collision_check` 但没给回调 → 明确报错
+10. 永远返回"碰撞"的回调 → 候选被拒
+11. 真实 `CollisionModel` 做回调 → home 附近小位移通过
+

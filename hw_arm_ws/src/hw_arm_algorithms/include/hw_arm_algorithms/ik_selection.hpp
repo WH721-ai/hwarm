@@ -26,6 +26,7 @@
 //         + w_margin·(1/margin_norm)
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -67,6 +68,17 @@ struct SolutionFilterOptions {
   /// 评分用的额定力矩（空 = 不做重力项打分；size = nv）
   Eigen::VectorXd rated_torque;
 
+  // ── 碰撞 / 桌面（可选，显式开启）─────────────────────────
+  //
+  // 用 std::function 注入，避免 ik_selection 依赖 collision_model
+  //（分层原则：决策层不该知道几何怎么建的）。
+  //
+  // 回调返回 **true = 撞了 / 不可行**（与 reject 语义一致）。
+  // 为空且 require_collision_check=true 时直接报错，而不是静默跳过
+  //（R2 的教训：空向量静默关闭保护）。
+  std::function<bool(const Eigen::VectorXd&)> collision_check;
+  bool require_collision_check = false;
+
   /// 峰值系数：三次插值 1.5/6.0，五次插值 1.875/5.77
   /// JTC 默认 splines（端点 v=0）≈ 三次，取 1.5 / 6.0
   double velocity_peak_factor = 1.5;
@@ -105,6 +117,8 @@ struct CandidateEvaluation {
   double gravity_ratio = 0.0;      ///< max_j |g_j| / rated_j
 
   bool accepted = false;
+  bool collided = false;       ///< 终点碰撞
+  bool path_collided = false;  ///< 路径碰撞
   std::string reject_reason;
   double score = 0.0;
 };
@@ -116,6 +130,7 @@ struct SelectionResult {
   bool ok = false;
   int index = -1;                 ///< 选中解在 IKResult::solutions 里的下标
   Eigen::VectorXd q;              ///< 选中解的关节角
+  bool collided = false;          ///< 选中的解是否碰撞（正常流程下恒为 false）
 
   std::vector<CandidateEvaluation> candidates;  ///< 全部候选（含被拒的）
   int n_accepted = 0;

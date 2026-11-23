@@ -126,6 +126,11 @@ SelectionResult selectSolution(const RobotModel& model, RobotWorkspace& ws,
     out.message = "没有候选解（IK 未收敛或全部超限位）";
     return out;
   }
+  // ★ 显式开启就必须提供回调 —— 不允许"忘了传 → 静默跳过保护"
+  if (filter.require_collision_check && !filter.collision_check) {
+    out.message = "要求碰撞检查但未提供 collision_check 回调";
+    return out;
+  }
 
   const bool has_vmax = filter.max_joint_velocity.size() == nv;
   const bool has_amax = filter.max_joint_accel.size() == nv;
@@ -223,6 +228,36 @@ SelectionResult selectSolution(const RobotModel& model, RobotWorkspace& ws,
                        filter.min_sigma_ratio));
       out.candidates.push_back(ev);
       continue;
+    }
+
+    // ⑥b 碰撞检查（可选）：路径逐点 + 终点
+    //
+    // 顺序放在"路径奇异"之后、"速度/加速度"之前 —— 便宜的判据在前。
+    // 实测成本：凸包 9.1 µs/点，20 点路径 ≈ 0.2 ms。
+    if (filter.collision_check) {
+      bool path_hit = false;
+      const int n = std::max(2, filter.path_samples);
+      for (int kk = 0; kk < n; ++kk) {
+        const double ss = static_cast<double>(kk) / (n - 1);
+        const Eigen::VectorXd qq = pinocchio::interpolate(model.pin(), q_now, ev.q, ss);
+        if (filter.collision_check(qq)) {
+          path_hit = true;
+          break;
+        }
+      }
+      ev.path_collided = path_hit;
+      if (path_hit) {
+        reject("路径碰撞/穿桌面");
+        out.candidates.push_back(ev);
+        continue;
+      }
+      // 终点单独再查一次（路径采样是离散的，端点最要紧）
+      if (filter.collision_check(ev.q)) {
+        ev.collided = true;
+        reject("终点碰撞/穿桌面");
+        out.candidates.push_back(ev);
+        continue;
+      }
     }
 
     // ⑦ 峰值速度（端点 v=0 的插值：v_peak = k_v·Δq/T）
@@ -333,6 +368,7 @@ SelectionResult selectSolution(const RobotModel& model, RobotWorkspace& ws,
   for (const auto& ev : out.candidates) {
     if (ev.index == best) {
       out.q = ev.q;
+      out.collided = ev.collided;
       break;
     }
   }

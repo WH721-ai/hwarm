@@ -141,10 +141,27 @@ launch/
 相机装 0.5 m 处即可覆盖整个工作空间（视野 0.95×0.55 m，848 宽下 1.12 mm/px）。
 **深度精度约 1~2% of distance**：0.3 m → 3~6 mm，0.5 m → 5~10 mm（需实测确认）。
 
-**环境约束（2026-11-22 核查）**
-- ❌ 无 GPU：`lspci` 只有 VMware SVGA II，无 `nvidia-smi`、无 CUDA
-- 8 核 CPU / 7.7 GB 内存，**可用仅 3.3 GB**，swap 已用 721 MB
-- ❌ 未装 realsense SDK / pyrealsense2 / torch
+**开发机（真实主机，2026-11-22 用户提供）**
+| 项 | 配置 |
+|---|---|
+| CPU | **i7-14650HX** 16C/24T（8P+8E），Raptor Lake-HX |
+| 内存 | 16 GB DDR5-5600 **单条**（15.8 GB 可用） |
+| **GPU** | **NVIDIA RTX 4060 Laptop，8 GB 显存**，驱动 616.56，PCIe 4.0 x8 |
+| 硬盘 | YMTC 954 GB NVMe |
+| 计划 | 在新 SSD 上装**原生 Linux** 开发 |
+
+**⇒ 之前"两个都跑不动"的结论要改**（那是 VMware 虚拟机：只有 SVGA、无 CUDA、7.7 GB 内存）
+
+算力换算（FP32 峰值）：RTX 4060 Laptop ≈ 13.8 TFLOPS = **V100 的 0.88 倍**
+→ 教程里 GraspNet 的 200 ms（V100/3090 口径）在 4060 上约 **200~300 ms**
+→ 8 GB 显存：GraspNet 推理约 2~4 GB、AnyGrasp 约 1~2 GB，**都放得下**
+
+**原生 Linux 的 5 个坑**
+1. NVIDIA 驱动 + Secure Boot：需 MOK 签名或关闭 Secure Boot
+2. RViz / Gazebo 建议 X11；Wayland + 165 Hz + 独显 易有渲染问题
+3. CUDA 版本与 PyTorch 对齐；Jazzy 是 Python 3.12
+4. D435 必须 USB 3.0 直连（虚拟机下深度流会掉帧）
+5. 250 Hz 控制要关降频：`governor=performance`，注意 E-core 调度抖动
 
 **GraspNet vs AnyGrasp**
 
@@ -154,9 +171,10 @@ launch/
 | 许可 | 自由 | **需申请（学术/商用分开）** |
 | 推理 | ~200 ms（GPU） | ~50 ms |
 | 成功率 | ~80% | 90%+ |
-| **本机可跑** | ⚠️ CPU 预计 2~10 s/帧 | ❌ **CUDA 硬依赖，直接排除** |
+| **本机可跑** | ✅ 4060 上约 200~300 ms | ✅ 硬件满足，但**需申请许可** |
 
-**→ 这台机器上两个都不合适。先走几何抓取。**
+**→ 硬件上两个都可行。但第一版仍推荐几何抓取**（桌面单物体顶抓不需要学习模型），
+GraspNet 留作"堆叠/杂乱场景"的备用路径。
 
 **第 1 阶段（推荐先做）：解析几何抓取，纯 CPU，无模型**
 1. RANSAC 去桌面平面

@@ -15,6 +15,7 @@ namespace mini_manip_bt {
 class FollowJointTrajectory
     : public BT::RosActionNode<control_msgs::action::FollowJointTrajectory> {
  public:
+ 
   using ActionT = control_msgs::action::FollowJointTrajectory;
 
   FollowJointTrajectory(const std::string& name, const BT::NodeConfig& conf,

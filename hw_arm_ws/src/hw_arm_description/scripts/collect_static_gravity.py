@@ -496,6 +496,14 @@ def main() -> int:
         # 质量/质心优先用工具配置里的（唯一真源），命令行只是兜底
         gmass = tool_mass if (tool_mass is not None and tool_mass > 0) else args.gripper_mass
         gcom = tool_com if tool_com is not None else np.array([0.00812, -0.00173, 0.04161])
+
+        # ★ 2026-11-26：夹爪已经正式写进 URDF 了（with_gripper 默认 true）。
+        #   这时再加质点就是**重复计重**（实测 joint2 预判从 3.86 变成 5.00）。
+        #   检测方法：模型里有没有 gr_baselink 这个 frame。
+        urdf_has_gripper = any("gr_baselink" in str(nm) for nm in _pm.frames)
+        if urdf_has_gripper and gmass > 0:
+            print(f"  ⚠️ URDF 里已含夹爪（gr_baselink），不再额外加 {gmass:.4f} kg 质点")
+            gmass = 0.0
         if gmass > 0:
             _pm.appendBodyToJoint(_pm.getJointId("joint6"),
                 _pin.Inertia(gmass, gcom, np.zeros((3, 3))), _pin.SE3.Identity())
@@ -503,6 +511,13 @@ def main() -> int:
                   f"({gcom[0]*1000:+.1f},{gcom[1]*1000:+.1f},{gcom[2]*1000:+.1f}) mm")
         _pd = _pm.createData()
         _fid = _pm.getFrameId("tool0")
+
+    # 力矩预判用的夹爪质量：URDF 里已经有夹爪就是 0（否则重复计重）
+    _pm_has_gripper = _pm is not None and any("gr_baselink" in str(nm) for nm in _pm.frames)
+    pred_mass = 0.0 if _pm_has_gripper else (
+        tool_mass if (tool_mass is not None and tool_mass > 0) else args.gripper_mass)
+    if _pm_has_gripper:
+        print("  力矩预判：URDF 已含夹爪，mass 质点取 0（避免重复计重）")
 
     def check_table(q):
         """返回 (ok, 最低 z)"""
@@ -524,7 +539,7 @@ def main() -> int:
     safe, skipped = [], []
     rows = []
     for i, q in enumerate(poses):
-        g = nominal_gravity(q, urdf, args.gripper_mass) if urdf else None
+        g = nominal_gravity(q, urdf, pred_mass) if urdf else None
         ok, over_j, val = check_tau(g)
         ok_tab, zmin = check_table(q)
         ok = ok and ok_tab
@@ -598,7 +613,7 @@ def main() -> int:
                   f"j4={math.degrees(q_goal[3]):6.1f}°  j5={math.degrees(q_goal[4]):6.1f}°  "
                   f"j6={math.degrees(q_goal[5]):6.1f}°")
             # 力矩预判再显示一次（用于判断要不要托）
-            g_pre = nominal_gravity(q_goal, urdf, args.gripper_mass)
+            g_pre = nominal_gravity(q_goal, urdf, pred_mass)
             if g_pre is not None:
                 print(f"   预判 τ = {np.round(g_pre, 2)}   （|τ_j2|={abs(g_pre[1]):.2f} N·m）")
 

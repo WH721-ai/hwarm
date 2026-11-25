@@ -344,11 +344,24 @@ class Collector(Node):
             # 运行中力矩监控（每 0.5 s 检查一次）
             if elapsed - last_report >= 0.5:
                 last_report = elapsed
-                if self.tau is not None and abs(self.tau[1]) > self.args.abort_j2_torque:
-                    self.get_logger().error(
-                        f"❌ joint2 实测力矩 {self.tau[1]:.2f} N·m 超过中止阈值 "
-                        f"{self.args.abort_j2_torque} —— 停止运动并保持")
-                    return f"joint2 力矩 {self.tau[1]:.2f} N·m 超限"
+                # ⚠️ 用"相对当前位形预测重力 + 余量"判断，而不是绝对阈值。
+                #  2026-11-26：位形 13 的预判 |τ2| 只有 3.84 N·m，
+                #  但抖动时实测冲到 9.66，撞上绝对阈值 9.5 → 误中止。
+                #  原因是"相对阈值"在不同位形下松紧不一：
+                #  低力矩位形（j2 只有 0.2 N·m）稍微一点动态力矩就报警，
+                #  高力矩位形（j2 到 5.8）却几乎没有余量。
+                if self.tau is not None:
+                    g_now = self._predicted_gravity()
+                    if g_now is not None:
+                        excess = np.abs(self.tau) - np.abs(g_now)
+                        j = int(np.argmax(excess))
+                        if excess[j] > self.args.abort_margin:
+                            self.get_logger().error(
+                                f"❌ joint{j+1} 实测 {self.tau[j]:.2f} N·m，"
+                                f"预测重力 {g_now[j]:.2f}，超出 {excess[j]:.2f} "
+                                f"> 余量 {self.args.abort_margin} —— 停止并保持")
+                            return (f"joint{j+1} 力矩 {self.tau[j]:.2f} 超预测 "
+                                    f"{g_now[j]:.2f} 达 {excess[j]:.2f} N·m")
                 # 用消息计数判断有没有真的断流（比看墙钟可靠：
                 # 紧循环里 spin_once 可能连续几轮都没赶上新消息）
                 if self.n_msg == self._last_n_msg:
@@ -376,6 +389,16 @@ class Collector(Node):
             self.get_logger().warn(
                 f"运动实际耗时 {real:.2f}s（设定 {duration:.2f}s）")
         return ""
+
+    def _predicted_gravity(self):
+        """当前位形的预测重力矩（用安全工作台算，失败返回 None）"""
+        g = getattr(self, "_gravity_fn", None)
+        if g is None or self.q is None:
+            return None
+        try:
+            return np.asarray(g(self.q))
+        except Exception:
+            return None
 
     def dither_and_mean(self, q_center: np.ndarray, amp: float, n: int,
                         duration: float, vel_tol: float) -> tuple[np.ndarray, np.ndarray]:
@@ -485,9 +508,11 @@ def main() -> int:
     ap.add_argument("--dither", type=int, default=3,
                     help="每个位形做几次小幅往复再取力矩平均（0=不抖）。"
                          "joint3 静摩擦死区约 ±1.2 N·m，不抖的话辨识残差的地板就在 0.5 左右")
-    ap.add_argument("--dither-amp", type=float, default=0.010,
-                    help="抖动幅度 rad（默认 0.010 ≈ 0.57°）")
-    ap.add_argument("--dither-time", type=float, default=1.2, help="每次抖动运动时长 s")
+    ap.add_argument("--dither-amp", type=float, default=0.006,
+                    help="抖动幅度 rad（默认 0.006 ≈ 0.34°；"
+                         "0.010 在 joint3 静摩擦大的位形会激起约 5 N·m 的lurch）")
+    ap.add_argument("--dither-time", type=float, default=2.0,
+                    help="每次抖动运动时长 s（放慢一点，避免黏滑突跳）")
     ap.add_argument("--settle-time", type=float, default=4.0, help="等待静止上限 s")
     # ⚠️ 阈值必须**高于电机速度反馈的量化台阶**，否则永远等不到"静止"：
     #    12 位速度字段 / VMAX：joint2 (40 rad/s) → 台阶 0.0195 rad/s
@@ -500,6 +525,9 @@ def main() -> int:
                     help="joint2 预判超过它的位形直接跳过（N·m）")
     ap.add_argument("--max-torque-frac", type=float, default=0.6,
                     help="其余轴的上限 = 连续额定 × 该比例（默认 0.6）")
+    ap.add_argument("--abort-margin", type=float, default=8.0,
+                    help="任一轴实测力矩超过"
+                         "（该位形预测重力 + 这个余量）就中止（默认 8 N·m）")
     ap.add_argument("--abort-j2-torque", type=float, default=9.5,
                     help="实测超过它立即中止（N·m）")
     ap.add_argument("--gripper-mass", type=float, default=0.3185,
@@ -668,6 +696,12 @@ def main() -> int:
         if not node.wait_state(10.0):
             print("❌ 收不到 /joint_states —— 请确认 bringup 已启动")
             return 1
+
+        # 把"预测重力"函数挂到节点上（中止判据要按位形算，不能一刀切）
+        if urdf:
+            def _g(qq):
+                return nominal_gravity(qq, urdf, pred_mass)
+            node._gravity_fn = _g
 
         q_now = np.array(node.q)
         print(f"\n起始位形 q = {np.round(q_now, 4)}")

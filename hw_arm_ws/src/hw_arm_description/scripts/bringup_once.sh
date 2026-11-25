@@ -12,18 +12,18 @@
 #   ./bringup_once.sh rviz:=true          # 透传给 ros2 launch
 set -u
 
-# ⚠️ 用 "[r]os2_control_node" 而不是 "ros2_control_node"：
-#    pgrep -f 会匹配到**自己**（以及 pkill 那条命令）的命令行，
-#    直接用裸字符串会永远返回 ≥1，脚本就再也启动不了。
-# pgrep -c 没有匹配时本身会打印 "0" 并返回 1，直接 || echo 0 会得到两个 0
-N=$(pgrep -fc "[r]os2_control_node" 2>/dev/null || true); N=${N:-0}
+# ⚠️ 用 ps 的 comm（进程名，15 字符截断）而不是 pgrep -f：
+#    pgrep -f 会匹配到**自己**（以及调用它的 shell）的命令行，
+#    只要命令里出现过 "ros2_control_node" 就永远返回 ≥1，脚本再也起不来。
+#    实测被这个坑卡了两次。
+N=$(ps -eo comm= | grep -cx "ros2_control_no" || true); N=${N:-0}
 if [ "${N:-0}" -gt 0 ]; then
   echo "❌ 已经有 $N 个 ros2_control_node 在跑，拒绝再启动一个。"
   echo
-  pgrep -fa "[r]os2_control_node|[r]os2 launch hw_arm_bringup" | sed 's/^/   /'
+  ps -eo pid,comm= | grep -i "ros2_control_no" | sed 's/^/   /'
   echo
   echo "先全部停掉："
-  echo "  pkill -f '[r]os2_control_node'; pkill -f '[r]os2 launch hw_arm_bringup'; sleep 2"
+  echo "  先跑 scripts/preflight.sh 看完整状态，或手动 kill 上面那些 pid"
   exit 1
 fi
 

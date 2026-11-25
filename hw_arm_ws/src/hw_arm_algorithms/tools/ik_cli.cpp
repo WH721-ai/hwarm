@@ -130,6 +130,8 @@ int main(int argc, char** argv) {
   double collision_margin = 0.0;  // 自碰撞余量，m（home 间隙仅 3.5 mm）
   double table_z = 0.0;           // 桌面在 world 系的 z
   double table_margin = 0.01;     // 桌面余量，m
+  double table_base_margin = 0.0; // 底座（螺栓固定）的余量，m
+  bool table_base_margin_set = false;
   std::string ee_links_s;         // 逗号分隔的末端 link 名
 
   for (int i = 1; i < argc; ++i) {
@@ -158,6 +160,7 @@ int main(int argc, char** argv) {
     else if (a == "--collision-margin") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--collision-margin 不是合法数字\n"); return 2; } collision_margin = v; }
     else if (a == "--table-z") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--table-z 不是合法数字\n"); return 2; } table_z = v; }
     else if (a == "--table-margin") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--table-margin 不是合法数字\n"); return 2; } table_margin = v; }
+    else if (a == "--table-base-margin") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--table-base-margin 不是合法数字\n"); return 2; } table_base_margin = v; table_base_margin_set = true; }
     else if (a == "--ee-links") ee_links_s = next();
     else if (a == "-h" || a == "--help") { usage(); return 0; }
     else { std::fprintf(stderr, "未知参数: %s\n", a.c_str()); usage(); return 2; }
@@ -280,10 +283,9 @@ int main(int argc, char** argv) {
   // 但**实际入口从来没装配** → 真机链路上碰撞检测一行都没跑。
   // 这里改成：默认开启，模型建不起来就**退出**（不回退成「无碰撞模式」）。
   //
-  // ⚠️ collision_model / key_fn / topt 必须声明在 if 之外：
+  // ⚠️ collision_model / topt 必须声明在 if 之外：
   //    回调按引用捕获，若在 else 块里声明，块结束时被析构 → 悬空引用。
   std::unique_ptr<hw_arm_algorithms::CollisionModel> collision_model;
-  hw_arm_algorithms::KeyPointFn key_fn;
   hw_arm_algorithms::TableConstraintOptions topt;
 
   if (!check_collision) {
@@ -308,9 +310,11 @@ int main(int argc, char** argv) {
       collision_model->setEndEffectorLinks(ee);
     }
 
-    key_fn = hw_arm_algorithms::makeTool0KeyPoints(frame_name);
-    topt.z_table = table_z;
-    topt.margin = table_margin;
+    // 桌面：按**全部几何体**算（C02 修完，不再是只查 TCP 一个点）
+    // 底座是螺栓固定在桌面上的，单独给 0 余量（不是忽略它）
+    topt = hw_arm_algorithms::TableConstraintOptions::withMountedBase(table_margin);
+    topt.offset = table_z;
+    if (!table_base_margin_set) topt.link_margin["base_link"] = 0.0;
 
     opt.filter.collision_check = [&](const Eigen::VectorXd& q) {
       if (check_self) {
@@ -320,7 +324,7 @@ int main(int argc, char** argv) {
         if (!r.is_free()) return r;
       }
       if (check_table) {
-        const auto r = hw_arm_algorithms::checkTable(model, ws, q, key_fn, topt);
+        const auto r = hw_arm_algorithms::checkTable(*collision_model, q, topt);
         if (!r.is_free()) return r;
       }
       return hw_arm_algorithms::CheckResult::free();
@@ -360,6 +364,13 @@ int main(int argc, char** argv) {
     std::printf("collision_margin: %.6g\n", collision_margin);
     std::printf("table_z: %.6g\n", table_z);
     std::printf("table_margin: %.6g\n", table_margin);
+    std::printf("table_base_margin: %.6g\n", table_base_margin);
+    const double tclear = hw_arm_algorithms::minTableClearance(*collision_model, q_now, topt);
+    if (std::isfinite(tclear)) {
+      std::printf("min_table_clearance_from: %.6g\n", tclear);
+    } else {
+      std::printf("min_table_clearance_from: nan\n");
+    }
     std::printf("collision_model: \"%s\"\n", collision_model->fingerprint().c_str());
     const double dmin = hw_arm_algorithms::minSelfDistance(*collision_model, q_now);
     if (std::isfinite(dmin)) {

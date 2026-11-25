@@ -12,6 +12,8 @@
 #include "hw_arm_algorithms/collision_model.hpp"
 #include "hw_arm_algorithms/collision_robot.hpp"
 #include "hw_arm_algorithms/collision_world.hpp"
+#include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/kinematics.hpp>
 #include "hw_arm_algorithms/data.hpp"
 #include "hw_arm_algorithms/ik_selection.hpp"
 #include "hw_arm_algorithms/kinematics.hpp"
@@ -201,66 +203,117 @@ TEST_F(CollisionTest, EndEffectorMatchingIsExact) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// 桌面约束
+// 桌面约束（★ C02：按全部几何体算，不是只查 TCP）
 // ══════════════════════════════════════════════════════════════════
 
-TEST_F(CollisionTest, TablePassesAboveTable) {
-  auto key = makeTool0KeyPoints("tool0");
-  TableConstraintOptions opt;
-  opt.z_table = 0.0;
-  opt.margin = 0.01;
-  const auto r = checkTable(*model_, *ws_, home(), key, opt);
+// ★ C02 的判定性反例（审查报告给的真实位形）
+//   TCP z = +0.01298（在桌面 +10 mm 之上 → 旧实现通过）
+//   但 link5 最低点 z = −0.02048（钻到桌面下 20.5 mm）
+TEST_F(CollisionTest, TableCatchesLinksBelowEvenWhenTcpIsAbove) {
+  Eigen::VectorXd q(6);
+  q << 0.8416794026, 2.8506534776, 2.3764412684,
+       -1.5271100631, 1.0984799951, -5.2424507243;
+
+  // 先把 TCP 高度验证一遍
+  auto& data = ws_->pin();
+  pinocchio::forwardKinematics(model_->pin(), data, q);
+  pinocchio::updateFramePlacements(model_->pin(), data);
+  pinocchio::FrameIndex fid = 0;
+  for (size_t i = 0; i < model_->pin().frames.size(); ++i) {
+    if (model_->pin().frames[i].name == "tool0") fid = static_cast<pinocchio::FrameIndex>(i);
+  }
+  const double tcp_z = data.oMf[fid].translation().z();
+  EXPECT_GT(tcp_z, 0.010) << "这个反例的前提是 TCP 在桌面上方，实际 " << tcp_z;
+
+  auto opt = TableConstraintOptions::withMountedBase(0.01);
+  opt.offset = 0.0;
+  const auto r = checkTable(*cm_, q, opt);
   ASSERT_FALSE(r.is_invalid()) << r.detail;
-  EXPECT_TRUE(r.is_free());
+  EXPECT_TRUE(r.is_collision()) << "TCP 在上方但连杆穿桌面，必须检出";
+  EXPECT_NE(r.detail.find("link"), std::string::npos) << r.detail;
 }
 
-TEST_F(CollisionTest, TableRejectsWhenTooLow) {
-  auto key = makeTool0KeyPoints("tool0");
-  TableConstraintOptions high;
-  high.z_table = 0.34;   // home 的 TCP z = 0.334 < 0.34 + 0.01
-  high.margin = 0.01;
-  const auto r = checkTable(*model_, *ws_, home(), key, high);
+// 底座"螺栓固定在桌面"：给它 0 余量就能通过，而不是忽略它
+TEST_F(CollisionTest, MountedBaseUsesZeroMarginInsteadOfBeingIgnored) {
+  auto opt = TableConstraintOptions::withMountedBase(0.01);
+  opt.offset = 0.0;
+  EXPECT_EQ(opt.link_margin.at("base_link"), 0.0);
+  EXPECT_TRUE(opt.ignored_links.empty()) << "底座不应该被整个忽略";
+
+  // home 位形：全部连杆（含底座）都在桌面上方
+  const auto r = checkTable(*cm_, home(), opt);
+  ASSERT_FALSE(r.is_invalid()) << r.detail;
+  EXPECT_TRUE(r.is_free()) << r.detail;
+}
+
+// 旧实现的已知局限：home 位形在"全部几何体"口径下也是安全的
+TEST_F(CollisionTest, HomePassesFullGeometryTableCheck) {
+  auto opt = TableConstraintOptions::withMountedBase(0.01);
+  const auto r = checkTable(*cm_, home(), opt);
+  EXPECT_TRUE(r.is_free()) << r.detail;
+  const double c = minTableClearance(*cm_, home(), opt);
+  ASSERT_TRUE(std::isfinite(c));
+  EXPECT_GT(c, 0.0);
+}
+
+// 把桌面抬高到不可能的高度 → 必须拒绝
+TEST_F(CollisionTest, TableTooHighIsRejected) {
+  auto opt = TableConstraintOptions::withMountedBase(0.01);
+  opt.offset = 5.0;
+  EXPECT_TRUE(checkTable(*cm_, home(), opt).is_collision());
+}
+
+// link_margin 覆盖生效：把 link5 的余量设成 10 m → 必碰
+TEST_F(CollisionTest, PerLinkMarginOverrideWorks) {
+  auto opt = TableConstraintOptions::withMountedBase(0.01);
+  opt.link_margin["link5"] = 10.0;
+  const auto r = checkTable(*cm_, home(), opt);
   EXPECT_TRUE(r.is_collision());
+  EXPECT_NE(r.detail.find("link5"), std::string::npos) << r.detail;
 }
 
-// ★ C03：桌面检查的无效输入
-TEST_F(CollisionTest, TableNullCallbackIsInvalid) {
-  KeyPointFn none;
-  const auto r = checkTable(*model_, *ws_, home(), none);
-  EXPECT_TRUE(r.is_invalid()) << "空回调不能返回'通过'";
+// ★ C03：桌面检查的无效输入仍返回 Invalid
+TEST_F(CollisionTest, TableInvalidInputs) {
+  auto opt = TableConstraintOptions::withMountedBase(0.01);
+
+  // q 维度
+  Eigen::VectorXd bad_dim(5); bad_dim.setZero();
+  EXPECT_TRUE(checkTable(*cm_, bad_dim, opt).is_invalid());
+
+  // q 含 NaN
+  Eigen::VectorXd q = home(); q[2] = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(checkTable(*cm_, q, opt).is_invalid());
+
+  // margin 非有限 / 为负
+  auto o2 = opt; o2.margin = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(checkTable(*cm_, home(), o2).is_invalid());
+  auto o3 = opt; o3.margin = -1.0;
+  EXPECT_TRUE(checkTable(*cm_, home(), o3).is_invalid());
+
+  // offset 非有限
+  auto o4 = opt; o4.offset = std::numeric_limits<double>::infinity();
+  EXPECT_TRUE(checkTable(*cm_, home(), o4).is_invalid());
+
+  // 法向非单位
+  auto o5 = opt; o5.normal = Eigen::Vector3d(0, 0, 2);
+  EXPECT_TRUE(checkTable(*cm_, home(), o5).is_invalid());
+
+  // link_margin 非法
+  auto o6 = opt; o6.link_margin["link3"] = -0.5;
+  EXPECT_TRUE(checkTable(*cm_, home(), o6).is_invalid());
+
+  // 全部忽略 ⇒ 什么都没查，必须 Invalid
+  auto o7 = opt;
+  for (int i = 0; i < cm_->numGeoms(); ++i) o7.ignored_links.push_back(cm_->geomLinkName(i));
+  EXPECT_TRUE(checkTable(*cm_, home(), o7).is_invalid());
 }
 
-TEST_F(CollisionTest, TableMissingFrameIsInvalid) {
-  auto key = makeTool0KeyPoints("no_such_frame");
-  const auto r = checkTable(*model_, *ws_, home(), key);
-  // 旧实现：找不到 frame 用 (0,0,0) 顶替，桌面在 z<0 时会放行
-  EXPECT_TRUE(r.is_invalid()) << r.detail;
-}
-
-TEST_F(CollisionTest, TableWrongRowCountIsInvalid) {
-  KeyPointFn bad = [](const RobotModel&, RobotWorkspace&, const Eigen::VectorXd&,
-                      Eigen::MatrixXd& out) { out.resize(2, 1); out.setZero(); };
-  EXPECT_TRUE(checkTable(*model_, *ws_, home(), bad).is_invalid());
-}
-
-TEST_F(CollisionTest, TableNaNParametersAreInvalid) {
-  auto key = makeTool0KeyPoints("tool0");
-  TableConstraintOptions opt;
-  opt.margin = std::numeric_limits<double>::quiet_NaN();
-  EXPECT_TRUE(checkTable(*model_, *ws_, home(), key, opt).is_invalid());
-
-  TableConstraintOptions opt2;
-  opt2.z_table = std::numeric_limits<double>::quiet_NaN();
-  EXPECT_TRUE(checkTable(*model_, *ws_, home(), key, opt2).is_invalid());
-}
-
-TEST_F(CollisionTest, TableNaNKeyPointIsInvalid) {
-  KeyPointFn nan_pt = [](const RobotModel&, RobotWorkspace&, const Eigen::VectorXd&,
-                         Eigen::MatrixXd& out) {
-    out.resize(3, 1);
-    out.setConstant(std::numeric_limits<double>::quiet_NaN());
-  };
-  EXPECT_TRUE(checkTable(*model_, *ws_, home(), nan_pt).is_invalid());
+// 非法模型
+TEST_F(CollisionTest, TableOnUnbuiltModelIsInvalid) {
+  CollisionModel empty;
+  auto opt = TableConstraintOptions::withMountedBase(0.01);
+  EXPECT_TRUE(checkTable(empty, home(), opt).is_invalid());
+  EXPECT_FALSE(std::isfinite(minTableClearance(empty, home(), opt)));
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -334,16 +387,13 @@ TEST_F(SelectionCollisionTest, InvalidCallbackFailsWholeSelection) {
 
 // 真实 CollisionModel 做回调：home 附近小位移通过
 TEST_F(SelectionCollisionTest, RealCollisionModelPassesHomeMotion) {
-  auto key = makeTool0KeyPoints("tool0");
-  TableConstraintOptions topt;
-  topt.z_table = 0.0;
-  topt.margin = 0.005;
+  auto topt = TableConstraintOptions::withMountedBase(0.005);
 
   SolutionFilterOptions fo;
   fo.collision_check = [&](const Eigen::VectorXd& q) {
     const auto sc = checkSelfCollision(*cm_, q);
     if (!sc.is_free()) return sc;
-    return checkTable(*model_, *ws_, q, key, topt);
+    return checkTable(*cm_, q, topt);
   };
 
   IKResult res;

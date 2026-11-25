@@ -3,73 +3,136 @@
 
 #include "hw_arm_algorithms/collision_world.hpp"
 
+#include <algorithm>
 #include <cmath>
-
-#include <pinocchio/algorithm/frames.hpp>
-#include <pinocchio/algorithm/kinematics.hpp>
+#include <limits>
 
 namespace hw_arm_algorithms {
+namespace {
 
-KeyPointFn makeTool0KeyPoints(const std::string& frame_name) {
-  return [frame_name](const RobotModel& model, RobotWorkspace& ws,
-                      const Eigen::VectorXd& q, Eigen::MatrixXd& out) {
-    pinocchio::FrameIndex f = 0;
-    bool found = false;
-    for (size_t i = 0; i < model.pin().frames.size(); ++i) {
-      if (model.pin().frames[i].name == frame_name) {
-        f = static_cast<pinocchio::FrameIndex>(i);
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      // ★ C03：算不出来就返回 0 列，由 checkTable 判为 Invalid，
-      //    **不要**用 (0,0,0) 冒充一个真实点（那在桌面低时会被放行）
-      out.resize(3, 0);
-      return;
-    }
-    auto& data = ws.pin();
-    pinocchio::forwardKinematics(model.pin(), data, q);
-    pinocchio::updateFramePlacements(model.pin(), data);
-    out.resize(3, 1);
-    out.col(0) = data.oMf[f].translation();
-  };
-}
-
-CheckResult checkTable(const RobotModel& model, RobotWorkspace& ws,
-                       const Eigen::VectorXd& q, const KeyPointFn& key_points,
-                       const TableConstraintOptions& opt) {
-  // ── 输入合法性（★ C03：任何一项不成立都返回 kInvalid，不是"通过"）──
-  if (!model.valid()) return CheckResult::invalid("RobotModel 无效");
-  if (q.size() != model.nq()) {
-    return CheckResult::invalid("q 维度不符：期望 " + std::to_string(model.nq()) +
+CheckResult validate(const CollisionModel& cm, const Eigen::VectorXd& q,
+                     const TableConstraintOptions& opt) {
+  if (!cm.valid()) return CheckResult::invalid("碰撞模型未初始化");
+  if (q.size() != cm.nq()) {
+    return CheckResult::invalid("q 维度不符：期望 " + std::to_string(cm.nq()) +
                                 "，实际 " + std::to_string(q.size()));
   }
   if (!q.allFinite()) return CheckResult::invalid("q 含 NaN/Inf");
-  if (!std::isfinite(opt.z_table)) return CheckResult::invalid("z_table 非有限值");
+  if (!opt.normal.allFinite()) return CheckResult::invalid("桌面法向含 NaN/Inf");
+  if (std::abs(opt.normal.norm() - 1.0) > 1e-6) {
+    return CheckResult::invalid("桌面法向不是单位向量（norm=" +
+                                std::to_string(opt.normal.norm()) + "）");
+  }
+  if (!std::isfinite(opt.offset)) return CheckResult::invalid("offset 非有限值");
   if (!std::isfinite(opt.margin)) return CheckResult::invalid("margin 非有限值");
   if (opt.margin < 0.0) return CheckResult::invalid("margin 为负");
-  if (!key_points) return CheckResult::invalid("关键点回调为空");
-
-  Eigen::MatrixXd pts;
-  key_points(model, ws, q, pts);
-
-  if (pts.rows() != 3) {
-    return CheckResult::invalid("关键点矩阵行数应为 3，实际 " +
-                                std::to_string(pts.rows()));
-  }
-  if (pts.cols() == 0) {
-    return CheckResult::invalid("关键点为空（末端帧找不到？）");
-  }
-  if (!pts.allFinite()) return CheckResult::invalid("关键点含 NaN/Inf");
-
-  const double z_min = opt.z_table + opt.margin;
-  for (int i = 0; i < pts.cols(); ++i) {
-    if (pts(2, i) < z_min) {
-      return CheckResult::collision(-1, "桌面以下", pts(2, i) - z_min);
+  for (const auto& kv : opt.link_margin) {
+    if (!std::isfinite(kv.second) || kv.second < 0.0) {
+      return CheckResult::invalid("link_margin[" + kv.first + "] 非法");
     }
   }
+  if (cm.numGeoms() == 0) return CheckResult::invalid("模型里没有几何体");
   return CheckResult::free();
+}
+
+/// 该 link 用的余量（优先 link_margin，其次全局 margin）
+double marginFor(const std::string& link, const TableConstraintOptions& opt) {
+  const auto it = opt.link_margin.find(link);
+  return (it != opt.link_margin.end()) ? it->second : opt.margin;
+}
+
+bool isIgnored(const std::string& link, const TableConstraintOptions& opt) {
+  return std::find(opt.ignored_links.begin(), opt.ignored_links.end(), link) !=
+         opt.ignored_links.end();
+}
+
+}  // namespace
+
+CheckResult checkTable(CollisionModel& cm, const Eigen::VectorXd& q,
+                       const TableConstraintOptions& opt) {
+  const CheckResult bad = validate(cm, q, opt);
+  if (bad.is_invalid()) return bad;
+
+  cm.updatePlacements(q);
+
+  // 逐几何体算"沿 -normal 方向的最低点"
+  std::string   worst_link;
+  double        worst_val = std::numeric_limits<double>::infinity();
+  double        worst_limit = 0.0;
+
+  for (int i = 0; i < cm.numGeoms(); ++i) {
+    const std::string& link = cm.geomLinkName(i);
+    if (isIgnored(link, opt)) continue;
+
+    const auto* verts = cm.geomVertices(i);
+    if (verts == nullptr || verts->empty()) {
+      return CheckResult::invalid("几何体 " + link + " 没有顶点数据（不是凸包？）");
+    }
+
+    const pinocchio::SE3& M = cm.geomWorldPlacement(i);
+    const Eigen::Matrix3d R = M.rotation();
+    const Eigen::Vector3d t = M.translation();
+
+    // nᵀ(R v + t) = (nᵀR)·v + nᵀt
+    const Eigen::RowVector3d a = opt.normal.transpose() * R;
+    const double b = opt.normal.dot(t);
+
+    double lo = std::numeric_limits<double>::infinity();
+    for (const auto& v : *verts) {
+      lo = std::min(lo, a.dot(v));
+    }
+    lo += b;
+
+    const double limit = opt.offset + marginFor(link, opt);
+    if (lo < worst_val) {
+      worst_val = lo;
+      worst_limit = limit;
+      worst_link = link;
+    }
+    if (lo < limit) {
+      return CheckResult::collision(
+          -1, "穿桌面：" + link + " 最低点 " +
+                  std::to_string(lo) + " m < 限 " + std::to_string(limit) + " m",
+          lo - limit);
+    }
+  }
+
+  if (worst_link.empty()) {
+    return CheckResult::invalid("所有几何体都被忽略，桌面检查没有实际检查任何东西");
+  }
+
+  // 通过：把最贴近桌面的 link 记在 detail 里，便于日志
+  CheckResult ok = CheckResult::free();
+  ok.detail = "最贴近桌面：" + worst_link + " 间隙 " +
+              std::to_string(worst_val - worst_limit) + " m";
+  return ok;
+}
+
+double minTableClearance(CollisionModel& cm, const Eigen::VectorXd& q,
+                         const TableConstraintOptions& opt) {
+  if (!validate(cm, q, opt).is_free()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  cm.updatePlacements(q);
+
+  double best = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < cm.numGeoms(); ++i) {
+    const std::string& link = cm.geomLinkName(i);
+    if (isIgnored(link, opt)) continue;
+    const auto* verts = cm.geomVertices(i);
+    if (verts == nullptr || verts->empty()) return std::numeric_limits<double>::quiet_NaN();
+
+    const pinocchio::SE3& M = cm.geomWorldPlacement(i);
+    const Eigen::RowVector3d a = opt.normal.transpose() * M.rotation();
+    const double b = opt.normal.dot(M.translation());
+
+    double lo = std::numeric_limits<double>::infinity();
+    for (const auto& v : *verts) lo = std::min(lo, a.dot(v));
+    lo += b;
+
+    best = std::min(best, lo - (opt.offset + marginFor(link, opt)));
+  }
+  return std::isfinite(best) ? best : std::numeric_limits<double>::quiet_NaN();
 }
 
 }  // namespace hw_arm_algorithms

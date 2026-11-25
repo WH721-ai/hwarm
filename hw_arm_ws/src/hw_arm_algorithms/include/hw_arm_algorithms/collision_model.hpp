@@ -47,7 +47,9 @@ class CollisionModel {
   /// build 之后调用；会影响哪几对碰撞对被视作"末端相关"。
   void setEndEffectorLinks(const std::vector<std::string>& link_names);
 
-  /// 更新所有几何体的世界位姿（每个 q 必须调一次）
+  /// 更新所有几何体的世界位姿。
+  /// 内部缓存上一次的 q：**同一个 q 重复调用是零成本**（自碰撞和桌面检查
+  /// 每个采样点都会调一次，去重后 FK 只算一遍）。
   void updatePlacements(const Eigen::VectorXd& q);
 
   pinocchio::GeometryModel& geom() { return geom_; }
@@ -60,6 +62,17 @@ class CollisionModel {
 
   /// 该碰撞对是否涉及末端执行器
   bool pairIsEndEffector(int idx) const;
+
+  // ── 给"按几何体算桌面最低点"用 ──
+  int numGeoms() const { return static_cast<int>(geom_.geometryObjects.size()); }
+  /// 第 i 个几何体所属的 link 名（已去掉 _N 后缀）
+  const std::string& geomLinkName(int i) const { return geo_link_names_.at(static_cast<size_t>(i)); }
+  /// 第 i 个几何体的**世界位姿**（必须先 updatePlacements）
+  const pinocchio::SE3& geomWorldPlacement(int i) const {
+    return data_->oMg[static_cast<size_t>(i)];
+  }
+  /// 第 i 个几何体的**局部顶点**（凸包顶点，几何体自身坐标系）；空=不是凸包
+  const std::vector<Eigen::Vector3d>* geomVertices(int i) const;
 
   /// 模型指纹：用于在日志/结果里标明"这次检查用的是哪套几何"
   std::string fingerprint() const { return fingerprint_; }
@@ -77,6 +90,12 @@ class CollisionModel {
   std::vector<int> pair_second_geo_;
   std::vector<std::string> geo_link_names_;   ///< 每个几何体所属 link 名（去掉 _N 后缀）
   std::vector<bool> pair_is_ee_;
+
+  /// 每个几何体的凸包顶点（几何体自身坐标系），build 时缓存
+  std::vector<std::vector<Eigen::Vector3d>> geom_vertices_;
+
+  Eigen::VectorXd last_q_;   ///< updatePlacements 去重用
+  bool has_last_q_ = false;
 
   std::string fingerprint_;
   bool valid_ = false;

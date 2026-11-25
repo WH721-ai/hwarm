@@ -69,6 +69,8 @@ bool CollisionModel::build(const RobotModel& model, const std::string& urdf_path
   pair_first_geo_.clear();
   pair_second_geo_.clear();
   geo_link_names_.clear();
+  geom_vertices_.clear();
+  has_last_q_ = false;
   pair_is_ee_.clear();
   fingerprint_.clear();
   data_.reset();
@@ -106,6 +108,14 @@ bool CollisionModel::build(const RobotModel& model, const std::string& urdf_path
     }
     obj.geometry = makeConvex(*h);
     geo_link_names_.push_back(base);
+
+    // 缓存顶点（几何体自身坐标系）：桌面检查要按顶点算最低点
+    std::vector<Eigen::Vector3d> verts;
+    verts.reserve(static_cast<size_t>(h->num_points));
+    for (int i = 0; i < h->num_points; ++i) {
+      verts.emplace_back(h->points[3 * i + 0], h->points[3 * i + 1], h->points[3 * i + 2]);
+    }
+    geom_vertices_.push_back(std::move(verts));
   }
 
   // ── ③ 碰撞对：全部 + 排除相邻 ──
@@ -166,7 +176,16 @@ void CollisionModel::setEndEffectorLinks(const std::vector<std::string>& link_na
 
 void CollisionModel::updatePlacements(const Eigen::VectorXd& q) {
   if (!valid_ || !data_ || !model_ || !model_data_) return;
+  // 去重：自碰撞和桌面检查都会调，同一个 q 只做一次 FK
+  if (has_last_q_ && last_q_.size() == q.size() && last_q_ == q) return;
   pinocchio::updateGeometryPlacements(*model_, *model_data_, geom_, *data_, q);
+  last_q_ = q;
+  has_last_q_ = true;
+}
+
+const std::vector<Eigen::Vector3d>* CollisionModel::geomVertices(int i) const {
+  if (i < 0 || i >= static_cast<int>(geom_vertices_.size())) return nullptr;
+  return &geom_vertices_[static_cast<size_t>(i)];
 }
 
 std::string CollisionModel::pairName(int idx) const {

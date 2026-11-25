@@ -1,0 +1,258 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  组件层：滚轮手指平行滑轨夹爪（roller_gripper_asm7）
+  =====================================================
+  来源：/mnt/hgfs/VMshare/roller_gripper_asm7/roller_gripper_asm7.urdf
+  本文件把它包成 xacro 宏，并做三处改动：
+    · 所有 link/joint 名加 "gr_" 前缀（原文件有 base_link，与手臂撞名）
+    · mesh 路径 → package://hw_arm_description/meshes/gripper/
+    · 去掉 <mujoco> 标签（MoveIt/xacro 用不到）
+
+  实测质量（由 URDF 惯性参数算出的真值）
+    · 总质量 0.5353 kg
+    · 质心 (0, 0, -11.6 mm)：在 palm 系，**正好在中轴上**，横向无偏心
+    · 单指 0.0347 kg；每指 2 根被动滚轮 0.0132 kg ×4；主驱齿轮 0.0631 kg
+
+  ⚠️ 这个 0.535 kg 让 joint2 峰值重力矩从 8.2 → 11.7 N·m，
+     超过 DM6216P 连续额定 10 N·m（117%），详见 docs/TODO.md C-37。
+
+  机构：DM3510 → 主驱齿轮(revolute) → 齿条(mimic 0.0204 m/rad) → 双指平行开合；
+        滚轮为被动 continuous。
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="hw_arm_gripper" params="prefix parent:='tool0' xyz:='0 0 0' rpy:='${pi} 0 0'">
+
+    <material name="grey"><color rgba="0.35 0.37 0.39 1.0"/></material>
+    <material name="steel"><color rgba="0.78 0.79 0.82 1.0"/></material>
+    <material name="orange"><color rgba="0.85 0.38 0.06 1.0"/></material>
+    <material name="roller_blue"><color rgba="0.25 0.42 0.55 1.0"/></material>
+
+    <!-- 把夹爪挂到 parent（默认 tool0）。rpy 默认绕 x 转 180°，
+         让夹爪的 -z（手指伸出方向）对齐 tool0 的 +z（工具轴） -->
+    <joint name="${prefix}gr_mount_joint" type="fixed">
+      <parent link="${prefix}${parent}"/>
+      <child link="${prefix}gr_base_link"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
+
+    <link name="${prefix}gr_base_link">
+      <inertial>
+        <origin xyz="0 0 0.002" rpy="0 0 0"/>
+        <mass value="0.350"/>
+        <inertia ixx="2.6e-04" ixy="0" ixz="0" iyy="3.6e-04" iyz="0" izz="4.6e-04"/>
+      </inertial>
+      <visual name="palm_visual">
+        <origin xyz="0 0 -0.012" rpy="0 0 0"/>
+        <geometry><mesh filename="package://hw_arm_description/meshes/gripper/palm.stl" scale="1 1 1"/></geometry>
+        <material name="grey"/>
+      </visual>
+      <collision name="palm_plate_collision">
+        <origin xyz="0 0 -0.006" rpy="0 0 0"/>
+        <geometry><box size="0.100 0.076 0.012"/></geometry>
+      </collision>
+      <collision name="palm_motor_collision">
+        <origin xyz="0 0 0.0175" rpy="0 0 0"/>
+        <geometry><cylinder radius="0.021" length="0.035"/></geometry>
+      </collision>
+    </link>
+    <link name="${prefix}gr_drive_gear">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.0631"/>
+        <inertia ixx="6.754e-06" ixy="0" ixz="0" iyy="6.754e-06" iyz="0" izz="1.313e-05"/>
+      </inertial>
+      <visual name="drive_gear_visual">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="package://hw_arm_description/meshes/gripper/drive_gear.stl" scale="1 1 1"/></geometry>
+        <material name="steel"/>
+      </visual>
+      <collision name="drive_gear_core_collision">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><cylinder radius="0.006" length="0.0054"/></geometry>
+      </collision>
+    </link>
+    <link name="${prefix}gr_left_finger">
+      <inertial>
+        <origin xyz="0.012 0.010 -0.040" rpy="0 0 0"/>
+        <mass value="0.0347"/>
+        <inertia ixx="1.630e-05" ixy="0" ixz="0" iyy="1.958e-05" iyz="0" izz="3.397e-06"/>
+      </inertial>
+      <visual name="left_finger_visual">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="package://hw_arm_description/meshes/gripper/finger_body.stl" scale="1 1 1"/></geometry>
+        <material name="orange"/>
+      </visual>
+      <collision name="left_finger_slider_collision">
+        <origin xyz="0.028 0.012 -0.0185" rpy="0 0 0"/>
+        <geometry><box size="0.012 0.024 0.012"/></geometry>
+      </collision>
+      <collision name="left_finger_arm_collision">
+        <origin xyz="0.019 0.012 -0.0145" rpy="0 0 0"/>
+        <geometry><box size="0.022 0.024 0.004"/></geometry>
+      </collision>
+      <collision name="left_finger_blade_collision">
+        <origin xyz="0.012 0.01915 -0.04925" rpy="0 0 0"/>
+        <geometry><box size="0.024 0.0035 0.0685"/></geometry>
+      </collision>
+      <collision name="left_finger_tip_collision">
+        <origin xyz="0.012 0.01915 -0.0865" rpy="0 0 0"/>
+        <geometry><box size="0.024 0.0035 0.003"/></geometry>
+      </collision>
+    </link>
+    <link name="${prefix}gr_left_roller_a">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.0132"/>
+        <inertia ixx="2.345e-06" ixy="0" ixz="0" iyy="2.345e-06" iyz="0" izz="2.375e-07"/>
+      </inertial>
+      <visual name="left_roller_a_visual">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="package://hw_arm_description/meshes/gripper/roller.stl" scale="1 1 1"/></geometry>
+        <material name="roller_blue"/>
+      </visual>
+      <collision name="left_roller_a_collision">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><cylinder radius="0.0055" length="0.044"/></geometry>
+      </collision>
+    </link>
+    <link name="${prefix}gr_left_roller_b">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.0132"/>
+        <inertia ixx="2.345e-06" ixy="0" ixz="0" iyy="2.345e-06" iyz="0" izz="2.375e-07"/>
+      </inertial>
+      <visual name="left_roller_b_visual">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="package://hw_arm_description/meshes/gripper/roller.stl" scale="1 1 1"/></geometry>
+        <material name="roller_blue"/>
+      </visual>
+      <collision name="left_roller_b_collision">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><cylinder radius="0.0055" length="0.044"/></geometry>
+      </collision>
+    </link>
+    <link name="${prefix}gr_right_finger">
+      <inertial>
+        <origin xyz="0.012 0.010 -0.040" rpy="0 0 0"/>
+        <mass value="0.0347"/>
+        <inertia ixx="1.630e-05" ixy="0" ixz="0" iyy="1.958e-05" iyz="0" izz="3.397e-06"/>
+      </inertial>
+      <visual name="right_finger_visual">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="package://hw_arm_description/meshes/gripper/finger_body.stl" scale="1 1 1"/></geometry>
+        <material name="orange"/>
+      </visual>
+      <collision name="right_finger_slider_collision">
+        <origin xyz="0.028 0.012 -0.0185" rpy="0 0 0"/>
+        <geometry><box size="0.012 0.024 0.012"/></geometry>
+      </collision>
+      <collision name="right_finger_arm_collision">
+        <origin xyz="0.019 0.012 -0.0145" rpy="0 0 0"/>
+        <geometry><box size="0.022 0.024 0.004"/></geometry>
+      </collision>
+      <collision name="right_finger_blade_collision">
+        <origin xyz="0.012 0.01915 -0.04925" rpy="0 0 0"/>
+        <geometry><box size="0.024 0.0035 0.0685"/></geometry>
+      </collision>
+      <collision name="right_finger_tip_collision">
+        <origin xyz="0.012 0.01915 -0.0865" rpy="0 0 0"/>
+        <geometry><box size="0.024 0.0035 0.003"/></geometry>
+      </collision>
+    </link>
+    <link name="${prefix}gr_right_roller_a">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.0132"/>
+        <inertia ixx="2.345e-06" ixy="0" ixz="0" iyy="2.345e-06" iyz="0" izz="2.375e-07"/>
+      </inertial>
+      <visual name="right_roller_a_visual">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="package://hw_arm_description/meshes/gripper/roller.stl" scale="1 1 1"/></geometry>
+        <material name="roller_blue"/>
+      </visual>
+      <collision name="right_roller_a_collision">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><cylinder radius="0.0055" length="0.044"/></geometry>
+      </collision>
+    </link>
+    <link name="${prefix}gr_right_roller_b">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.0132"/>
+        <inertia ixx="2.345e-06" ixy="0" ixz="0" iyy="2.345e-06" iyz="0" izz="2.375e-07"/>
+      </inertial>
+      <visual name="right_roller_b_visual">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="package://hw_arm_description/meshes/gripper/roller.stl" scale="1 1 1"/></geometry>
+        <material name="roller_blue"/>
+      </visual>
+      <collision name="right_roller_b_collision">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><cylinder radius="0.0055" length="0.044"/></geometry>
+      </collision>
+    </link>
+    <link name="${prefix}gr_hand_tcp">
+    </link>
+    <joint name="${prefix}gr_drive_gear_joint" type="revolute">
+      <parent link="${prefix}gr_base_link"/>
+      <child link="${prefix}gr_drive_gear"/>
+      <origin xyz="0 0 -0.0215" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="0.0" upper="1.7157" effort="3.0" velocity="25.0"/>
+      <dynamics damping="0.01" friction="0.0"/>
+    </joint>
+    <joint name="${prefix}gr_left_finger_joint" type="prismatic">
+      <parent link="${prefix}gr_base_link"/>
+      <child link="${prefix}gr_left_finger"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="0.0" upper="0.035" effort="20.0" velocity="0.5"/>
+      <dynamics damping="0.05" friction="0.0"/>
+      <mimic joint="${prefix}gr_drive_gear_joint" multiplier="0.0204" offset="0.0"/>
+    </joint>
+    <joint name="${prefix}gr_left_roller_a_joint" type="continuous">
+      <parent link="${prefix}gr_left_finger"/>
+      <child link="${prefix}gr_left_roller_a"/>
+      <origin xyz="0.004 0.0115 -0.0525" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <dynamics damping="0.0005" friction="0.0"/>
+    </joint>
+    <joint name="${prefix}gr_left_roller_b_joint" type="continuous">
+      <parent link="${prefix}gr_left_finger"/>
+      <child link="${prefix}gr_left_roller_b"/>
+      <origin xyz="0.018 0.0115 -0.0525" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <dynamics damping="0.0005" friction="0.0"/>
+    </joint>
+    <joint name="${prefix}gr_right_finger_joint" type="prismatic">
+      <parent link="${prefix}gr_base_link"/>
+      <child link="${prefix}gr_right_finger"/>
+      <origin xyz="0 0 0" rpy="0 0 3.141592653589793"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="0.0" upper="0.035" effort="20.0" velocity="0.5"/>
+      <dynamics damping="0.05" friction="0.0"/>
+      <mimic joint="${prefix}gr_drive_gear_joint" multiplier="0.0204" offset="0.0"/>
+    </joint>
+    <joint name="${prefix}gr_right_roller_a_joint" type="continuous">
+      <parent link="${prefix}gr_right_finger"/>
+      <child link="${prefix}gr_right_roller_a"/>
+      <origin xyz="0.004 0.0115 -0.0525" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <dynamics damping="0.0005" friction="0.0"/>
+    </joint>
+    <joint name="${prefix}gr_right_roller_b_joint" type="continuous">
+      <parent link="${prefix}gr_right_finger"/>
+      <child link="${prefix}gr_right_roller_b"/>
+      <origin xyz="0.018 0.0115 -0.0525" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <dynamics damping="0.0005" friction="0.0"/>
+    </joint>
+    <joint name="${prefix}gr_hand_tcp_joint" type="fixed">
+      <parent link="${prefix}gr_base_link"/>
+      <child link="${prefix}gr_hand_tcp"/>
+      <origin xyz="0.011 0 -0.055" rpy="0 0 0"/>
+    </joint>
+
+  </xacro:macro>
+</robot>

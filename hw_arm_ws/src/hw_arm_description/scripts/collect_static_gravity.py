@@ -88,6 +88,47 @@ def _halton(i: int, base: int) -> float:
     return r
 
 
+def load_tool_envelope(path: str):
+    """读 config/tool/*.yaml，返回 (质量, 质心, 包络点 Nx3 法兰系)
+
+    为什么要它：末端装了夹爪之后，末端沿工具轴伸出 119.4 mm。
+    原来只按 joint 限位挑位形，结果**夹爪会穿过桌面**。
+    这里用夹爪碰撞体的角点作为包络，逐个位形检查最低点。
+    """
+    try:
+        import yaml
+    except ImportError:
+        return None
+    import numpy as _np
+    try:
+        with open(path) as f:
+            d = yaml.safe_load(f)
+    except Exception:
+        return None
+    pts = _np.array(d.get("envelope_points_m", []), dtype=float)
+    if pts.size == 0:
+        return None
+    return (float(d.get("mass_kg", 0.0)),
+            _np.array(d.get("com_m", [0, 0, 0]), dtype=float),
+            pts)
+
+
+def tool_lowest_z(pin_model, pin_data, frame_id, q, envelope):
+    """给定 q，返回夹爪包络在世界系的最低 z（m）
+
+    ⚠️ 不调用任何碰撞算法：只是把包络点用 tool0 的世界位姿变换过去取最小值。
+       线性变换下极值必在包络点上 —— 对"点集"是精确的。
+    """
+    import pinocchio as pin
+    pin.forwardKinematics(pin_model, pin_data, q)
+    pin.updateFramePlacements(pin_model, pin_data)
+    M = pin_data.oMf[frame_id]
+    R = M.rotation
+    t = M.translation
+    w = (R @ envelope.T).T + t
+    return float(w[:, 2].min())
+
+
 def order_by_nearest(poses: list[np.ndarray], start: np.ndarray) -> list[np.ndarray]:
     """最近邻排序：让相邻两步的关节空间距离最小
 
@@ -386,6 +427,11 @@ def main() -> int:
     ap.add_argument("--no-bidirectional", action="store_true",
                     help="不做双向采集（不推荐：摩擦无法抵消）")
     ap.add_argument("--dry-run", action="store_true", help="只规划并打印，不动机械臂")
+    ap.add_argument("--tool-yaml", default=None,
+                    help="工具包络配置（默认自动找 hw_arm_description/config/tool/assemb7_gripper.yaml）")
+    ap.add_argument("--table-z", type=float, default=0.0, help="桌面 world z（默认 0）")
+    ap.add_argument("--table-clearance", type=float, default=0.005,
+                    help="夹爪最低点离桌面的余量 m（默认 5 mm）")
     ap.add_argument("--keep", type=int, default=0,
                     help="过滤后最多保留多少个位形（0=全保留）")
     ap.add_argument("--yes", action="store_true",
@@ -394,6 +440,16 @@ def main() -> int:
     ap.add_argument("--confirm-each", choices=["move", "pose"], default="move",
                     help="确认粒度：move=每次运动前确认（最安全）；pose=每个位形确认一次")
     args = ap.parse_args()
+
+    if args.tool_yaml is None:
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            cand = os.path.join(get_package_share_directory("hw_arm_description"),
+                                "config", "tool", "assemb7_gripper.yaml")
+            if os.path.isfile(cand):
+                args.tool_yaml = cand
+        except Exception:
+            pass
 
     poses = plan_poses(args.poses, args.seed)
 
@@ -415,6 +471,46 @@ def main() -> int:
     t_lim = np.array([T_RATED[0] * FRAC, args.max_j2_torque, T_RATED[2] * FRAC,
                       T_RATED[3] * FRAC, T_RATED[4] * FRAC, T_RATED[5] * FRAC])
 
+    # ── 工具包络（用于桌面检查）──
+    tool_env = None
+    tool_mass, tool_com = args.gripper_mass, None
+    if args.tool_yaml:
+        loaded = load_tool_envelope(args.tool_yaml)
+        if loaded is not None:
+            tool_mass, tool_com, env_pts = loaded
+            tool_env = env_pts
+            print(f"\n工具包络: {args.tool_yaml}")
+            print(f"  质量 {tool_mass:.4f} kg，"
+                  f"沿工具轴伸到 {env_pts[:,2].max()*1000:.1f} mm，"
+                  f"{len(env_pts)} 个包络点")
+        else:
+            print(f"\n⚠️ 读不到工具包络 {args.tool_yaml}，跳过桌面检查")
+
+    # FK 用模型（含夹爪质量，用于力矩预判）
+    import pinocchio as _pin
+    _pm = None
+    _pd = None
+    _fid = None
+    if urdf:
+        _pm = _pin.buildModelFromUrdf(urdf)
+        # 质量/质心优先用工具配置里的（唯一真源），命令行只是兜底
+        gmass = tool_mass if (tool_mass is not None and tool_mass > 0) else args.gripper_mass
+        gcom = tool_com if tool_com is not None else np.array([0.00812, -0.00173, 0.04161])
+        if gmass > 0:
+            _pm.appendBodyToJoint(_pm.getJointId("joint6"),
+                _pin.Inertia(gmass, gcom, np.zeros((3, 3))), _pin.SE3.Identity())
+            print(f"  力矩预判用：裸臂 + 质点 {gmass:.4f} kg @ "
+                  f"({gcom[0]*1000:+.1f},{gcom[1]*1000:+.1f},{gcom[2]*1000:+.1f}) mm")
+        _pd = _pm.createData()
+        _fid = _pm.getFrameId("tool0")
+
+    def check_table(q):
+        """返回 (ok, 最低 z)"""
+        if tool_env is None or _pm is None:
+            return True, float("nan")
+        z = tool_lowest_z(_pm, _pd, _fid, q, tool_env)
+        return (z >= args.table_z + args.table_clearance), z
+
     def check_tau(g):
         """返回 (ok, 超限的轴号 或 -1, 该轴预判值)"""
         if g is None:
@@ -430,7 +526,10 @@ def main() -> int:
     for i, q in enumerate(poses):
         g = nominal_gravity(q, urdf, args.gripper_mass) if urdf else None
         ok, over_j, val = check_tau(g)
-        rows.append((q, abs(g[1]) if g is not None else float("nan"), ok, over_j, val))
+        ok_tab, zmin = check_table(q)
+        ok = ok and ok_tab
+        rows.append((q, abs(g[1]) if g is not None else float("nan"), ok, over_j, val,
+                     ok_tab, zmin))
         (safe if ok else skipped).append(q)
 
     # 先截取，再打印 —— 否则表格里会出现"✅ 但其实被 --keep 丢掉的"位形
@@ -442,18 +541,19 @@ def main() -> int:
         keep_ids = {id(q) for q in safe}
 
     print(f"\n{'#':>3}  {'j2':>7} {'j3':>7} {'j4':>7} {'j5':>7} {'j6':>7}   "
-          f"{'τ_j2 预判':>10}  结论")
-    for i, (q, j2_tau, ok, over_j, val) in enumerate(rows):
+          f"{'τ_j2':>8} {'夹爪最低z(mm)':>12}  结论")
+    for i, (q, j2_tau, ok, over_j, val, ok_tab, zmin) in enumerate(rows):
         if not ok:
-            mark = "⏭️ 跳过（超力矩）"
+            mark = ("⏭️ 跳过（穿桌面 z=%.1fmm）" % (zmin*1000)) if not ok_tab \
+                   else f"⏭️ 跳过（joint{over_j+1} 超力矩 {val:.2f}）"
         elif id(q) in keep_ids:
             mark = "✅ 采用"
         else:
             mark = "➖ 合格但未选（--keep）"
-        extra = "" if ok else f"（joint{over_j+1} 预判 {val:.2f} > 限 {t_lim[over_j]:.1f}）"
+        zs = f"{zmin*1000:6.1f}" if zmin == zmin else "   n/a"
         print(f"{i:3d}  {math.degrees(q[1]):7.1f} {math.degrees(q[2]):7.1f} "
               f"{math.degrees(q[3]):7.1f} {math.degrees(q[4]):7.1f} {math.degrees(q[5]):7.1f}   "
-              f"{j2_tau:10.2f}  {mark}{extra}")
+              f"{j2_tau:8.2f} {zs}  {mark}")
 
     print(f"\n规划 {len(poses)} 个候选：合格 {len(rows)-len(skipped)} 个，"
           f"超力矩 {len(skipped)} 个，**最终采用 {len(safe)} 个**")

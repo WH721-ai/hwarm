@@ -23,7 +23,14 @@
   ② 名字加 gr_ 前缀
      原文件有 tool0 / tool0_joint，与手臂 URDF 撞名。
 
-  ③ 爪的视觉改用碰撞盒（临时）
+  ③ 爪用 **fixed 关节**（锁在 q=0 闭合位）
+     原 URDF 是 prismatic（两指可开合）。但 prismatic 会让 Pinocchio 的 nq 从 6 变 8，
+     而 hw_arm_hardware 里 ARM_DOF=6、算法层也全部假设 6 自由度
+     → 整条链路会错位。
+     夹爪开度对 C-05（静态重力）和碰撞检查都不影响，所以先固定。
+     以后要把夹爪作为第 7 轴接入时，再改回 prismatic 并同步 ARM_DOF。
+
+  ④ 爪的视觉改用碰撞盒（临时）
      原文件引用 package://assemb7_gripper/meshes/gripper_jaw_*.STL，
      但 mesh 文件不在（VMshare 里只有 urdf/xacro）。
      爪本来就有 9 层 AABB 碰撞盒（作者刻意按 z 分层，避免整爪凸包填实齿条缺口），
@@ -286,20 +293,15 @@
     <link name="${prefix}gr_tcp">
       <!-- 视觉暂用碰撞盒代替（gripper_jaw_*.STL 缺失） -->
     </link>
-    <joint name="${prefix}gr_joint1" type="prismatic">
+    <joint name="${prefix}gr_joint1" type="fixed">
       <parent link="${prefix}gr_baselink"/>
       <child link="${prefix}gr_link1"/>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <axis xyz="-1 0 0"/>
-      <limit lower="0" upper="0.012000" effort="50.000" velocity="0.100"/>
     </joint>
-    <joint name="${prefix}gr_joint2" type="prismatic">
+    <joint name="${prefix}gr_joint2" type="fixed">
       <parent link="${prefix}gr_baselink"/>
       <child link="${prefix}gr_link2"/>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <axis xyz="1 0 0"/>
-      <limit lower="0" upper="0.012000" effort="0" velocity="0"/>
-      <mimic joint="${prefix}gr_joint1" multiplier="1" offset="0"/>
     </joint>
     <joint name="${prefix}gr_tcp_joint" type="fixed">
       <parent link="${prefix}gr_baselink"/>

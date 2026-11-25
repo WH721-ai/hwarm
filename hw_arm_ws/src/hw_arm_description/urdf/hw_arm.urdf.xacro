@@ -28,6 +28,14 @@
   <xacro:arg name="use_gazebo" default="false" />
 
   <!-- 夹爪（装配体7 平行夹爪，实测 318.5 g）。默认关闭，不影响原有 ROS 接口 -->
+  <!-- 重力补偿 / 拖动示教（C-04 / C-05）的开关，默认全关，不改现有行为 -->
+  <xacro:arg name="gravity_compensation" default="false" />
+  <xacro:arg name="zero_gravity" default="false" />
+  <xacro:arg name="gravity_params_path" default="" />
+  <xacro:arg name="gravity_scale" default="1.0" />
+  <xacro:arg name="zero_gravity_kd" default="1.0" />
+  <xacro:arg name="gravity_ramp_time" default="3.0" />
+
   <xacro:arg name="with_gripper" default="true" />
   <xacro:arg name="gripper_xyz" default="0 0 0" />
   <!-- 夹爪 +z 是接近方向（指向指尖），与 tool0 的 +z 同向 ⇒ 默认 identity -->

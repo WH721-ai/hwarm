@@ -28,6 +28,7 @@
 // 重力补偿（C-04）—— 算法来自 hw_arm_algorithms，这里只做调用
 #include "hw_arm_algorithms/data.hpp"
 #include "hw_arm_algorithms/gravity.hpp"
+#include "hw_arm_algorithms/gravity_identify.hpp"
 #include "hw_arm_algorithms/model.hpp"
 
 namespace hw_arm_hardware {
@@ -159,6 +160,24 @@ class HwArmHW : public hardware_interface::SystemInterface {
   std::unique_ptr<hw_arm_algorithms::RobotModel> model_;
   std::unique_ptr<hw_arm_algorithms::RobotWorkspace> ws_;
   std::vector<double> gravity_tau_;   // 最近一次算出的 g(q)，方便日志/调试
+
+  // ── 拖动示教（零重力）的安全机制（2026-11-26 新增）
+  //
+  // 零重力模式下 kp=0，机械臂**只靠 tau_ff 支撑**。一旦 tau_ff 算错，
+  // 机械臂会直接往下掉。所以加了四道保险：
+  //   ① gravity_params_path：用辨识出的 θ̂（rms 0.18 N·m）而不是标称 URDF（0.88）
+  //   ② gravity_ramp_time：激活后从 0 线性升到 gravity_scale，
+  //      给操作者 3 秒时间扶住/确认，避免一使能就猛地下垂
+  //   ③ tau_limit：逐轴力矩限幅（默认按电机连续额定），防止算错时打满
+  //   ④ zero_gravity_vel_limit：任一轴超速就加大 kd 当刹车，
+  //      并且只打印节流日志（不直接去激活 —— 去激活反而会自由落体）
+  std::string gravity_params_path_;          // 空 = 用标称 URDF 惯性参数
+  hw_arm_algorithms::GravityParams gparams_; // 读回来的 θ̂ / 偏置 / 摩擦
+  double gravity_ramp_time_ = 3.0;           // s，0 = 立即满额
+  double ramp_t0_ = 0.0;                     // 激活时刻（steady clock 秒）
+  std::vector<double> tau_limit_ = {120.0, 45.0, 28.0, 10.0, 7.0, 7.0};
+  double zero_gravity_vel_limit_ = 2.0;      // rad/s
+  int vel_guard_count_ = 0;                  // 连续超速周期数（用于日志）
   // direction 参数写成 " +1 -1 -1 +1 +1 +1 " 时的缓存（懒解析）
   std::vector<std::string> direction_vec_;
 

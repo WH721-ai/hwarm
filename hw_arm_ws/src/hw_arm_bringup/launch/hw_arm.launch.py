@@ -105,6 +105,21 @@ def generate_launch_description():
                 default_value="false",
                 description="达妙电机只认经典 CAN 帧；接口也必须 fd off"),
             DeclareLaunchArgument("active_joints", default_value="1,2,3,4,5,6"),
+        # ── 重力补偿 / 拖动示教（C-04 / C-05）
+        DeclareLaunchArgument(
+            "gravity_compensation", default_value="false",
+            description="启用重力前馈 tau_ff = g(q)（kp 照常，机械臂变'轻'但仍然是硬的）"),
+        DeclareLaunchArgument(
+            "zero_gravity", default_value="false",
+            description="零重力拖动示教：kp=0 + tau_ff=g(q) + kd 阻尼。"
+                        "此时**不要**启动轨迹控制器"),
+        DeclareLaunchArgument(
+            "gravity_params_path", default_value="",
+            description="gravity_id_cli 产出的 theta YAML；空 = 用 URDF 标称惯性参数"),
+        DeclareLaunchArgument("gravity_scale", default_value="1.0"),
+        DeclareLaunchArgument("zero_gravity_kd", default_value="1.0"),
+        DeclareLaunchArgument("gravity_ramp_time", default_value="3.0",
+                              description="激活后重力从 0 升到满额的时间 s"),
             DeclareLaunchArgument("rviz", default_value="true"),
             DeclareLaunchArgument(
                 "controllers",

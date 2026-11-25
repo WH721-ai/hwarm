@@ -54,6 +54,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 target_link_libraries(${PROJECT_NAME} PUBLIC
   Eigen3::Eigen
   pinocchio::pinocchio
+  yaml-cpp
 )
 
 # 库的名字里带命名空间前缀，避免与其它包的 target 冲突

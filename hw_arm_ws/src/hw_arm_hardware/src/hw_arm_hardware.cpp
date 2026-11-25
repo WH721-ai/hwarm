@@ -24,6 +24,14 @@ using hardware_interface::CallbackReturn;
 using hardware_interface::return_type;
 
 namespace {
+
+// 单调时钟秒数（用于重力斜坡）
+double steady_now() {
+  return std::chrono::duration<double>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 rclcpp::Logger logger() { return rclcpp::get_logger("HwArmHW"); }
 rclcpp::Clock& throttle_clock() {
   static rclcpp::Clock clock(RCL_STEADY_TIME);
@@ -711,9 +719,37 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
     Eigen::VectorXd q(static_cast<Eigen::Index>(ARM_DOF));
     for (size_t i = 0; i < ARM_DOF; ++i) q[static_cast<Eigen::Index>(i)] = pos_states_[i];
     Eigen::VectorXd g(model_->nv());
-    hw_arm_algorithms::computeGravity(*model_, *ws_, q, g);
-    for (size_t i = 0; i < ARM_DOF; ++i)
-      gravity_tau_[i] = gravity_scale_ * g[static_cast<Eigen::Index>(i)];
+      // ── 用辨识参数（有的话）：g = Y(q)·θ̂ + offset
+      if (gparams_.valid && gparams_.theta.size() == model_->nv() * 10) {
+        const Eigen::VectorXd off =
+            gparams_.offsets.size() == model_->nv() ? gparams_.offsets
+                                                   : Eigen::VectorXd::Zero(model_->nv());
+        hw_arm_algorithms::computeGravityFromParamsAndOffset(
+            *model_, *ws_, q, gparams_.theta, off, g);
+      } else {
+        hw_arm_algorithms::computeGravity(*model_, *ws_, q, g);
+      }
+
+      // ── 平滑的库仑摩擦补偿：f_c · tanh(dq/eps)，eps = 0.05 rad/s
+      if (gparams_.valid && gparams_.friction.size() == model_->nv()) {
+        for (size_t i = 0; i < ARM_DOF; ++i) {
+          const double dq = vel_states_[i];
+          g[static_cast<Eigen::Index>(i)] +=
+              gparams_.friction[static_cast<Eigen::Index>(i)] * std::tanh(dq / 0.05);
+        }
+      }
+
+      // ── 斜坡：激活后 scale 从 0 线性升到 gravity_scale_，
+      //    给操作者几秒时间扶稳，避免一使能就猛地下垂
+      double ramp = 1.0;
+      if (gravity_ramp_time_ > 0.0)
+        ramp = std::clamp((steady_now() - ramp_t0_) / gravity_ramp_time_, 0.0, 1.0);
+      const double gscale = gravity_scale_ * ramp;
+      for (size_t i = 0; i < ARM_DOF; ++i) {
+        // 力矩限幅：参数算错时不许把电机打满
+        gravity_tau_[i] = std::clamp(gscale * g[static_cast<Eigen::Index>(i)],
+                                     -tau_limit_[i], tau_limit_[i]);
+      }
 
     if (gravity_dry_run_) {
       RCLCPP_INFO_THROTTLE(logger(), throttle_clock(), 1000,
@@ -733,7 +769,17 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
                            (apply_gravity ? gravity_tau_[j] : 0.0);
     // 零重力模式：kp 恒 0（位置命令失效），只留速度阻尼 + 重力前馈
     const double kp_use = zero_gravity_ ? 0.0 : kp_[j];
-    const double kd_use = zero_gravity_ ? zero_gravity_kd_ : kd_[j];
+    double kd_use = zero_gravity_ ? zero_gravity_kd_ : kd_[j];
+    // ── 零重力速度守护
+    //  某一轴转得比 zero_gravity_vel_limit_ 快，多半是重力前馈不够、机械臂在往下溜。
+    //  **不能直接去激活**（那会自由落体），而是把 kd 放大当刹车并节流报警。
+    if (zero_gravity_ && std::abs(vel_states_[j]) > zero_gravity_vel_limit_) {
+      kd_use = std::min(5.0, zero_gravity_kd_ * 4.0);
+      if (++vel_guard_count_ % 250 == 1)
+        RCLCPP_WARN(logger(),
+                    "零重力: joint%zu 速度 %.2f rad/s 超限 %.2f —— kd 临时提到 %.2f 刹车",
+                    j + 1, vel_states_[j], zero_gravity_vel_limit_, kd_use);
+    }
     params.push_back({kp_use, kd_use,
                       d * pos_commands_[j],
                       d * vel_commands_[j],

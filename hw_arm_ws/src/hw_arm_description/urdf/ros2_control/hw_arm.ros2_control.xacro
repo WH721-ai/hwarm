@@ -96,9 +96,14 @@
                ⚠️ 默认全关 + dry_run，第一次务必先用 dry_run 看日志里的
                   g(q) 数值和方向对不对，再 gravity_compensation=true 真正施加。
                   方向错了会**主动往下压**，比不补偿更危险。 -->
-          <param name="gravity_compensation">false</param>
-          <param name="gravity_dry_run">true</param>
-          <param name="gravity_scale">1.0</param>
+          <param name="gravity_compensation">$(arg gravity_compensation)</param>
+          <param name="gravity_dry_run">false</param>
+          <param name="gravity_scale">$(arg gravity_scale)</param>
+          <!-- 辨识出的重力参数（gravity_id_cli 产出）。空 = 用 URDF 标称惯性参数 -->
+          <param name="gravity_params_path">$(arg gravity_params_path)</param>
+          <param name="gravity_ramp_time">$(arg gravity_ramp_time)</param>
+          <!-- 逐轴力矩限幅（电机连续额定，N·m）—— 参数算错时不许打满 -->
+          <param name="tau_limit">40 10 12 3.5 3 3</param>
 
           <!-- ══ 零重力（拖动示教）模式 ══
                和上面的「重力补偿」是**两件不同的事**：
@@ -111,8 +116,9 @@
                     ros2 launch hw_arm_bringup hw_arm.launch.py \
                         use_fake_hardware:=false controllers:=joint_state_broadcaster
                ⚠️ 第一次试之前扶着机械臂 —— 万一补偿方向错了它会掉下去 -->
-          <param name="zero_gravity">false</param>
-          <param name="zero_gravity_kd">1.0</param>
+          <param name="zero_gravity">$(arg zero_gravity)</param>
+          <param name="zero_gravity_kd">$(arg zero_gravity_kd)</param>
+          <param name="zero_gravity_vel_limit">2.0</param>
           <!-- CAN ID 映射：joint1..joint6 各自用哪个电机发送 ID（接收自动 +0x10）
                默认就是 1..6，不需要写。
                2026-11-15：joint5/joint6 曾装反，**已用 change_id 把电机固件 ID

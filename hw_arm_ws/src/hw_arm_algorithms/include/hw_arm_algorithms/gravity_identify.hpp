@@ -115,6 +115,25 @@ GravityIdResult identifyGravity(const RobotModel& model, RobotWorkspace& ws,
                                 const std::vector<GravityIdSample>& samples,
                                 const GravityIdOptions& opt = {});
 
+/// 辨识结果（从 YAML 读回来，供运行时重力补偿用）
+struct GravityParams {
+  bool valid = false;
+  Eigen::VectorXd theta;      ///< 重力参数（np = 10×(njoints−1)）
+  Eigen::VectorXd offsets;    ///< 每轴恒定偏置（空 = 无）
+  Eigen::VectorXd friction;   ///< 每轴库仑摩擦（空 = 无）
+  double rms = 0.0;
+  double holdout_rms = 0.0;
+  int rank = 0;
+  std::string source;         ///< 来源文件路径
+};
+
+/// 从 gravity_id_cli 产出的 YAML 读回参数
+///
+/// 失败时返回 false 并填 `error`；**不要把无效参数当成"没有辨识"继续用** ——
+/// 那样会静默退回标称模型，而使用者以为自己加载了辨识结果。
+bool loadGravityParams(const std::string& path, GravityParams& out,
+                       std::string* error = nullptr);
+
 /// 用辨识参数在给定位形上评估重力矩（供验证/对比）
 Eigen::VectorXd evalGravityTheta(const RobotModel& model, RobotWorkspace& ws,
                                  const Eigen::VectorXd& q,

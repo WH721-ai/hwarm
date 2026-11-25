@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include <yaml-cpp/yaml.h>
 #include <Eigen/SVD>
 
 #include "hw_arm_algorithms/gravity.hpp"
@@ -71,6 +72,43 @@ Eigen::MatrixXd augmentWithOffsets(const Eigen::MatrixXd& A, int nv) {
 }
 
 }  // namespace
+
+bool loadGravityParams(const std::string& path, GravityParams& out,
+                       std::string* error) {
+  out = GravityParams{};
+  out.source = path;
+  try {
+    const YAML::Node root = YAML::LoadFile(path);
+    if (!root["theta"]) {
+      if (error) *error = "缺少 theta 字段";
+      return false;
+    }
+    const auto& tn = root["theta"];
+    out.theta.resize(static_cast<Eigen::Index>(tn.size()));
+    for (size_t i = 0; i < tn.size(); ++i) out.theta[static_cast<Eigen::Index>(i)] = tn[i].as<double>();
+
+    auto read_vec = [](const YAML::Node& n, Eigen::VectorXd& v) {
+      if (!n || !n.IsSequence()) return false;
+      v.resize(static_cast<Eigen::Index>(n.size()));
+      for (size_t i = 0; i < n.size(); ++i) v[static_cast<Eigen::Index>(i)] = n[i].as<double>();
+      return true;
+    };
+    read_vec(root["offsets"], out.offsets);
+    read_vec(root["friction"], out.friction);
+
+    if (root["meta"]) {
+      const auto& m = root["meta"];
+      if (m["rms"]) out.rms = m["rms"].as<double>();
+      if (m["holdout_rms"]) out.holdout_rms = m["holdout_rms"].as<double>();
+      if (m["rank"]) out.rank = m["rank"].as<int>();
+    }
+    out.valid = true;
+    return true;
+  } catch (const std::exception& e) {
+    if (error) *error = e.what();
+    return false;
+  }
+}
 
 Eigen::VectorXd evalGravityTheta(const RobotModel& model, RobotWorkspace& ws,
                                  const Eigen::VectorXd& q,

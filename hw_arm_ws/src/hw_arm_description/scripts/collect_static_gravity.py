@@ -218,23 +218,76 @@ class Collector(Node):
         self.pub.publish(m)
 
     def move_to(self, q_goal: np.ndarray, duration: float) -> bool:
-        """余弦缓动，绝不跳变"""
+        """按**墙钟时间**做五次多项式缓动（min-jerk）
+
+        ══════ 为什么必须按时间而不是按步数 ══════
+        旧实现是"发 n 步、每步 spin_once(1/50)"，看起来像 50 Hz，但
+        `spin_once(timeout)` 在**收到消息时就返回**：joint_states 是 250 Hz，
+        于是每次循环只有 ~4 ms 而不是 20 ms
+            → 实际运动时间是设定的 1/5
+            → 用户反馈"速度太快了"
+        而且循环间隔抖动 → 位置序列在时间上不均匀
+            → 用户反馈"关节曲线有急转"
+
+        现在改成 `a = elapsed / duration`，速度由墙钟决定，
+        不管回调多快，运动一定在 duration 秒内完成。
+
+        ══════ 为什么用五次而不是余弦 ══════
+        余弦  s = 0.5(1−cos πa)  端点速度 0，但**加速度在端点最大**
+              → 起停瞬间有冲击，看起来就是"急转"
+        五次  s = 10a³−15a⁴+6a⁵  端点速度 0 且**加速度 0**（min-jerk）
+              → 起停平滑
+        """
         if self.q is None:
             return False
+
+        # 起点取**最新的实测位置**（先刷新，别用几秒前的缓存）
+        self.refresh(0.15)
         q0 = self.q.copy()
-        rate = 50.0
-        n = max(1, int(duration * rate))
-        for k in range(1, n + 1):
-            a = k / n
-            s = 0.5 * (1.0 - math.cos(math.pi * a))     # 0→1，端点速度为 0
-            self.send(q0 + (q_goal - q0) * s)
-            rclpy.spin_once(self, timeout_sec=1.0 / rate)
-            # 运行中力矩监控
-            if self.tau is not None and abs(self.tau[1]) > self.args.abort_j2_torque:
-                self.get_logger().error(
-                    f"❌ joint2 实测力矩 {self.tau[1]:.2f} N·m 超过中止阈值 "
-                    f"{self.args.abort_j2_torque} —— 停止运动并保持")
-                return False
+        dq = q_goal - q0
+
+        rate = 100.0                       # 命令下发频率（比 250 Hz 控制环低，够用）
+        period = 1.0 / rate
+        t_start = time.monotonic()
+        last_report = 0.0
+        n_sent = 0
+
+        while True:
+            elapsed = time.monotonic() - t_start
+            a = 1.0 if duration <= 0 else min(1.0, elapsed / duration)
+            s_curve = 10*a**3 - 15*a**4 + 6*a**5          # min-jerk
+            self.send(q0 + dq * s_curve)
+            n_sent += 1
+
+            if a >= 1.0:
+                break
+
+            # 运行中力矩监控（每 0.5 s 检查一次）
+            if elapsed - last_report >= 0.5:
+                last_report = elapsed
+                if self.tau is not None and abs(self.tau[1]) > self.args.abort_j2_torque:
+                    self.get_logger().error(
+                        f"❌ joint2 实测力矩 {self.tau[1]:.2f} N·m 超过中止阈值 "
+                        f"{self.args.abort_j2_torque} —— 停止运动并保持")
+                    return False
+                if self.last_stamp is not None and \
+                        (time.monotonic() - self.last_stamp) > 1.0:
+                    self.get_logger().error("❌ 运动中关节状态中断 —— 停止")
+                    return False
+
+            # 补齐到下一个周期（spin 只用来收消息，不用它计时）
+            t_next = t_start + (n_sent) * period
+            remain = t_next - time.monotonic()
+            if remain > 0:
+                rclpy.spin_once(self, timeout_sec=min(remain, period))
+            else:
+                rclpy.spin_once(self, timeout_sec=0.0)
+
+        real = time.monotonic() - t_start
+        # 只在明显偏离设定时才打印，避免刷屏
+        if abs(real - duration) > 0.15 * max(duration, 1e-3):
+            self.get_logger().warn(
+                f"运动实际耗时 {real:.2f}s（设定 {duration:.2f}s）")
         return True
 
     def wait_settle(self, vel_tol: float, need: int, timeout: float) -> tuple[bool, np.ndarray]:
@@ -279,7 +332,10 @@ def main() -> int:
     ap.add_argument("--out", default="static_gravity.yaml")
     ap.add_argument("--poses", type=int, default=24, help="位形数（默认 24）")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--move-time", type=float, default=2.0, help="每段运动时间 s")
+    ap.add_argument("--move-time", type=float, default=4.0,
+                    help="每段运动时间 s（默认 4.0；原来是 2.0 = 速度减半）")
+    ap.add_argument("--speed-scale", type=float, default=1.0,
+                    help="再乘一个倍数：>1 更慢，<1 更快")
     ap.add_argument("--settle-time", type=float, default=4.0, help="等待静止上限 s")
     ap.add_argument("--vel-tol", type=float, default=0.01, help="静止速度阈值 rad/s")
     ap.add_argument("--settle-count", type=int, default=10)
@@ -431,7 +487,7 @@ def main() -> int:
                       f"{(time.monotonic()-node.last_stamp):.1f} s 前" if node.last_stamp else "     从未收到")
                 aborted = True; break
 
-            if not node.move_to(q_goal, args.move_time):
+            if not node.move_to(q_goal, args.move_time * args.speed_scale):
                 print("  ❌ 运动被中止（力矩超限）")
                 aborted = True; break
 
@@ -482,10 +538,10 @@ def main() -> int:
                 act = ask("  ▶ Enter 执行反向接近（s 跳过 B / q 退出）: ")
                 if act == "quit": aborted = False; break
                 if act == "skip": continue
-            if not node.move_to(off, args.move_time * 0.6):
+            if not node.move_to(off, args.move_time * 0.6 * args.speed_scale):
                 aborted = True; break
             node.wait_settle(args.vel_tol, args.settle_count, args.settle_time)
-            if not node.move_to(q_goal, args.move_time * 0.6):
+            if not node.move_to(q_goal, args.move_time * 0.6 * args.speed_scale):
                 aborted = True; break
             ok, qb = node.wait_settle(args.vel_tol, args.settle_count, args.settle_time)
             if not ok:

@@ -182,3 +182,35 @@ Ctrl+C  →  硬件 on_deactivate 会把 kp 恢复成 70 并保持在当前位�
 | 推起来一顿一顿 | kd 太大或库仑摩擦补偿方向反了 |
 | 松手后慢慢漂 | 静摩擦死区（正常，≤ 0.184/70 = 2.6 mrad/s 量级不算问题） |
 | 某一轴明显比其他轴差 | 看该轴的 `per_joint_rms`，joint3 是 0.346（最大） |
+
+---
+
+## 8. 退出时的那些 WARN —— **正常，不是故障**
+
+Ctrl+C 之后会出现一屏：
+
+```
+[WARN] (hardware 'hw_arm_hardware_interface'): 'joint3/effort' state interface
+       not in available list. This should not happen (hint: multiple cleanup calls).
+...
+[INFO] Shutting down the controller manager.
+[ERROR] Exception in publisher thread: context cannot be slept with because it's invalid!
+[INFO] process has finished cleanly [pid 230143]
+```
+
+**这些都是有序退出的产物：**
+
+| 消息 | 原因 | 要不要管 |
+|---|---|---|
+| `state interface not in available list ... multiple cleanup calls` | ros2_control 在 deactivate→cleanup 链上重复清理 interface | ❌ 不用管（它自己写了 hint） |
+| `context cannot be slept with because it's invalid` | pal_statistics 的发布线程在 rclcpp context 销毁后才 join，上游已知噪音 | ❌ 不用管 |
+| `Shutting down the controller manager` | 正在有序关闭 | ✅ 正常 |
+| **`process has finished cleanly`** | **判断正常的依据** | ✅ |
+
+**判断标准：**
+
+```
+"process has finished cleanly"         → 正常退出
+"process has died [pid ... exit code -11/-6]"  → 真的崩了
+运行期（不是退出时）出现上面那些 WARN   → 那才是问题
+```

@@ -44,6 +44,15 @@ def launch_setup(context, *args, **kwargs):
         if c.strip()
     ]
 
+    # 重力补偿 / 拖动示教开关（透传给 xacro）
+    gcomp = LaunchConfiguration("gravity_compensation").perform(context)
+    gdry = LaunchConfiguration("gravity_dry_run").perform(context)
+    zg = LaunchConfiguration("zero_gravity").perform(context)
+    gscale = LaunchConfiguration("gravity_scale").perform(context)
+    gkd = LaunchConfiguration("zero_gravity_kd").perform(context)
+    gramp = LaunchConfiguration("gravity_ramp_time").perform(context)
+    gpath = LaunchConfiguration("gravity_params_path").perform(context)
+
     robot_description = ParameterValue(
         Command(
             [
@@ -52,6 +61,13 @@ def launch_setup(context, *args, **kwargs):
                 " can_interface:=", can_iface,
                 " can_fd:=", can_fd,
                 " active_joints:=", active_joints,
+                " gravity_compensation:=", gcomp,
+                " gravity_dry_run:=", gdry,
+                " zero_gravity:=", zg,
+                " gravity_scale:=", gscale,
+                " zero_gravity_kd:=", gkd,
+                " gravity_ramp_time:=", gramp,
+                " gravity_params_path:=", gpath,
             ]
         ),
         value_type=str,
@@ -109,6 +125,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "gravity_compensation", default_value="false",
             description="启用重力前馈 tau_ff = g(q)（kp 照常，机械臂变'轻'但仍然是硬的）"),
+        DeclareLaunchArgument(
+            "gravity_dry_run", default_value="true",
+            description="只算 tau_ff 不施加（阶段 1 用）"),
         DeclareLaunchArgument(
             "zero_gravity", default_value="false",
             description="零重力拖动示教：kp=0 + tau_ff=g(q) + kd 阻尼。"

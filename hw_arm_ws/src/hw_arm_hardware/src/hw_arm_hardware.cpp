@@ -42,8 +42,12 @@ bool to_bool(std::string v, bool fallback) {
   // ::tolower 对负值是 UB（非 ASCII 字符高位），先转 unsigned char
   std::transform(v.begin(), v.end(), v.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  if (v == "true" || v == "1") return true;
-  if (v == "false" || v == "0") return false;
+  // ⚠️ xacro 的布尔属性会渲染成 Python 风格的 "True"/"False"，
+  //    而这里原来只认 "true"/"false" —— 于是 gravity_compensation=True
+  //    被当成非法值、退回 fallback=false，表现为"参数明明传了却不生效"
+  //    （2026-11-26 真机踩到：日志显示"重力补偿: 关"）。
+  if (v == "true" || v == "1" || v == "yes") return true;
+  if (v == "false" || v == "0" || v == "no") return false;
   return fallback;
 }
 

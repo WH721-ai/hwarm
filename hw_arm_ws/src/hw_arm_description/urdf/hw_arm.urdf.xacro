@@ -30,6 +30,7 @@
   <!-- 夹爪（装配体7 平行夹爪，实测 318.5 g）。默认关闭，不影响原有 ROS 接口 -->
   <!-- 重力补偿 / 拖动示教（C-04 / C-05）的开关，默认全关，不改现有行为 -->
   <xacro:arg name="gravity_compensation" default="false" />
+  <xacro:arg name="gravity_dry_run" default="true" />
   <xacro:arg name="zero_gravity" default="false" />
   <xacro:arg name="gravity_params_path" default="" />
   <xacro:arg name="gravity_scale" default="1.0" />
@@ -76,6 +77,13 @@
     active_joints="$(arg active_joints)"
     refresh_per_cycle="$(arg refresh_per_cycle)"
     use_gazebo="$(arg use_gazebo)"
+    gravity_compensation="$(arg gravity_compensation)"
+    gravity_dry_run="$(arg gravity_dry_run)"
+    zero_gravity="$(arg zero_gravity)"
+    gravity_params_path="$(arg gravity_params_path)"
+    gravity_scale="$(arg gravity_scale)"
+    zero_gravity_kd="$(arg zero_gravity_kd)"
+    gravity_ramp_time="$(arg gravity_ramp_time)"
     control_gains="${control_gains}" />
 
 </robot>

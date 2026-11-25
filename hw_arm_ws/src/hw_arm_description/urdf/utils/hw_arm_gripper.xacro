@@ -1,0 +1,311 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  组件层：装配体7 平行夹爪（assemb7_gripper）
+  =====================================================
+  来源：/mnt/hgfs/VMshare/assemb7_gripper.urdf（+ .xacro 的可调参数）
+
+  ═══ 相对原始 URDF 的三处改动 ═══
+
+  ① 质量按实测重填（最重要）
+     原始 URDF 总质量 832.8 g，实测称重 318.5 g
+     ⇒ 统一缩放 k = 0.382441，质量与惯量一起乘（I = ∫r²dm，均匀缩放下线性）
+     ⇒ 质心不变（均匀缩放不改质心）
+
+     | link       | 原质量   | 新质量    |
+     | (rows)     |         |          |
+     | baselink   | 706.57 g | 270.22 g |
+     | 每爪       |  63.12 g |  24.14 g |
+     | **合计**   | 832.81 g | **318.50 g** |
+
+     等效密度检查：外形包围体 321.9 cm³
+       原始 2.59 g/cm³（= 实心钛）→ 实测 0.99 g/cm³（铝壳+塑料，合理）
+
+  ② 名字加 gr_ 前缀
+     原文件有 tool0 / tool0_joint，与手臂 URDF 撞名。
+
+  ③ 爪的视觉改用碰撞盒（临时）
+     原文件引用 package://assemb7_gripper/meshes/gripper_jaw_*.STL，
+     但 mesh 文件不在（VMshare 里只有 urdf/xacro）。
+     爪本来就有 9 层 AABB 碰撞盒（作者刻意按 z 分层，避免整爪凸包填实齿条缺口），
+     这里直接拿它当视觉，形状足够辨识。拿到 STL 后可换回 mesh。
+
+  ═══ 坐标约定（来自原文件注释）═══
+     X = 开合方向，**Z = 接近方向（指向指尖）**，Y = 左侧
+     原点在安装法兰面中心
+     q=0 = 机械闭合极限（两指顶死），q 增大为张开
+     **+z 指向指尖 ⇒ 与手臂 tool0 的 +z（工具轴朝外）同向 ⇒ 挂载用 identity**
+
+  ═══ 实测后果（joint2 力矩）═══
+     裸臂              8.2 N·m  （82% 连续额定 10）
+     本夹爪 0.3185 kg  10.4 N·m  （**104%**，短时安全，长停发热）
+     峰值额定 45 N·m，动作只用到 23%
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <material name="gripper_grey"><color rgba="0.75 0.77 0.80 1.0"/></material>
+  <material name="gripper_orange"><color rgba="0.90 0.45 0.10 1.0"/></material>
+
+  <xacro:macro name="hw_arm_gripper" params="prefix parent:='tool0' xyz:='0 0 0' rpy:='0 0 0'">
+    <!-- 挂载：手臂 tool0 → 夹爪法兰，默认 identity（+z 同向） -->
+    <joint name="${prefix}gr_mount_joint" type="fixed">
+      <parent link="${prefix}${parent}"/>
+      <child link="${prefix}gr_baselink"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
+
+    <link name="${prefix}gr_baselink">
+      <inertial>
+        <origin xyz="0.009467 -0.002044 0.037399" rpy="0 0 0"/>
+        <mass value="0.270221460"/>
+        <inertia ixx="1.856049400e-04" ixy="-1.179102711e-05" ixz="-1.597836959e-06" iyy="3.224414331e-04" iyz="2.029459456e-05" izz="2.592825102e-04"/>
+      </inertial>
+      <visual>
+        <origin xyz="0.000000 0.000000 0.005750" rpy="0 0 0"/>
+        <geometry><cylinder radius="0.025000" length="0.011500"/></geometry>
+        <material name="gripper_grey"/>
+      </visual>
+      <visual>
+        <origin xyz="0.000000 0.000000 0.020800" rpy="0 0 0"/>
+        <geometry><cylinder radius="0.021000" length="0.019600"/></geometry>
+        <material name="gripper_grey"/>
+      </visual>
+      <visual>
+        <origin xyz="0.000000 0.000000 0.033850" rpy="0 0 0"/>
+        <geometry><box size="0.088000 0.057000 0.007700"/></geometry>
+        <material name="gripper_grey"/>
+      </visual>
+      <visual>
+        <origin xyz="0.000000 0.000000 0.051350" rpy="0 0 0"/>
+        <geometry><box size="0.112600 0.068300 0.027700"/></geometry>
+        <material name="gripper_grey"/>
+      </visual>
+      <visual>
+        <origin xyz="0.000000 0.000000 0.066950" rpy="0 0 0"/>
+        <geometry><box size="0.112000 0.047000 0.003900"/></geometry>
+        <material name="gripper_grey"/>
+      </visual>
+      <collision>
+        <origin xyz="0.000000 0.000000 0.005750" rpy="0 0 0"/>
+        <geometry><cylinder radius="0.025000" length="0.011500"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="0.000000 0.000000 0.020800" rpy="0 0 0"/>
+        <geometry><cylinder radius="0.021000" length="0.019600"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="0.000000 0.000000 0.033850" rpy="0 0 0"/>
+        <geometry><box size="0.088000 0.057000 0.007700"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="0.000000 0.000000 0.051350" rpy="0 0 0"/>
+        <geometry><box size="0.112600 0.068300 0.027700"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="0.000000 0.000000 0.066950" rpy="0 0 0"/>
+        <geometry><box size="0.112000 0.047000 0.003900"/></geometry>
+      </collision>
+    </link>
+    <link name="${prefix}gr_link1">
+      <inertial>
+        <origin xyz="-0.011398 -0.004041 0.065194" rpy="0 0 0"/>
+        <mass value="0.024139270"/>
+        <inertia ixx="6.285411781e-06" ixy="1.323244585e-07" ixz="-1.904554346e-07" iyy="8.269513778e-06" iyz="-4.512799453e-07" izz="5.106729754e-06"/>
+      </inertial>
+      <!-- 视觉暂用碰撞盒代替（gripper_jaw_*.STL 缺失） -->
+      <visual>
+        <origin xyz="-0.013384 -0.001979 0.068967" rpy="0 0 0"/>
+        <geometry><box size="0.025550 0.019065 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="-0.013754 -0.002299 0.074901" rpy="0 0 0"/>
+        <geometry><box size="0.024942 0.029024 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="-0.013656 -0.002484 0.080835" rpy="0 0 0"/>
+        <geometry><box size="0.024746 0.028514 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="-0.013138 -0.002430 0.086769" rpy="0 0 0"/>
+        <geometry><box size="0.023710 0.028407 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="-0.012309 -0.001276 0.092703" rpy="0 0 0"/>
+        <geometry><box size="0.022052 0.026098 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="-0.011223 -0.001276 0.098637" rpy="0 0 0"/>
+        <geometry><box size="0.019879 0.026098 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="-0.010136 -0.001774 0.104571" rpy="0 0 0"/>
+        <geometry><box size="0.017705 0.027094 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="-0.009148 -0.001632 0.110505" rpy="0 0 0"/>
+        <geometry><box size="0.015730 0.026810 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="-0.008062 -0.001596 0.116439" rpy="0 0 0"/>
+        <geometry><box size="0.013556 0.027619 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <collision>
+        <origin xyz="-0.013384 -0.001979 0.068967" rpy="0 0 0"/>
+        <geometry><box size="0.025550 0.019065 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="-0.013754 -0.002299 0.074901" rpy="0 0 0"/>
+        <geometry><box size="0.024942 0.029024 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="-0.013656 -0.002484 0.080835" rpy="0 0 0"/>
+        <geometry><box size="0.024746 0.028514 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="-0.013138 -0.002430 0.086769" rpy="0 0 0"/>
+        <geometry><box size="0.023710 0.028407 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="-0.012309 -0.001276 0.092703" rpy="0 0 0"/>
+        <geometry><box size="0.022052 0.026098 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="-0.011223 -0.001276 0.098637" rpy="0 0 0"/>
+        <geometry><box size="0.019879 0.026098 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="-0.010136 -0.001774 0.104571" rpy="0 0 0"/>
+        <geometry><box size="0.017705 0.027094 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="-0.009148 -0.001632 0.110505" rpy="0 0 0"/>
+        <geometry><box size="0.015730 0.026810 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="-0.008062 -0.001596 0.116439" rpy="0 0 0"/>
+        <geometry><box size="0.013556 0.027619 0.005934"/></geometry>
+      </collision>
+    </link>
+    <link name="${prefix}gr_link2">
+      <inertial>
+        <origin xyz="0.012523 0.004131 0.065194" rpy="0 0 0"/>
+        <mass value="0.024139270"/>
+        <inertia ixx="6.315624591e-06" ixy="-7.687056696e-08" ixz="4.788156708e-07" iyy="7.983065745e-06" iyz="4.814927552e-07" izz="4.849729650e-06"/>
+      </inertial>
+      <!-- 视觉暂用碰撞盒代替（gripper_jaw_*.STL 缺失） -->
+      <visual>
+        <origin xyz="0.013384 0.001980 0.068967" rpy="0 0 0"/>
+        <geometry><box size="0.025550 0.019065 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="0.013754 0.002300 0.074901" rpy="0 0 0"/>
+        <geometry><box size="0.024942 0.029024 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="0.013657 0.002484 0.080835" rpy="0 0 0"/>
+        <geometry><box size="0.024746 0.028514 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="0.013139 0.002431 0.086769" rpy="0 0 0"/>
+        <geometry><box size="0.023710 0.028407 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="0.012310 0.001277 0.092703" rpy="0 0 0"/>
+        <geometry><box size="0.022052 0.026098 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="0.011223 0.001277 0.098637" rpy="0 0 0"/>
+        <geometry><box size="0.019879 0.026098 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="0.010136 0.001774 0.104571" rpy="0 0 0"/>
+        <geometry><box size="0.017705 0.027094 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="0.009148 0.001633 0.110505" rpy="0 0 0"/>
+        <geometry><box size="0.015730 0.026810 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <visual>
+        <origin xyz="0.008062 0.001597 0.116439" rpy="0 0 0"/>
+        <geometry><box size="0.013556 0.027619 0.005934"/></geometry>
+        <material name="gripper_orange"/>
+      </visual>
+      <collision>
+        <origin xyz="0.013384 0.001980 0.068967" rpy="0 0 0"/>
+        <geometry><box size="0.025550 0.019065 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="0.013754 0.002300 0.074901" rpy="0 0 0"/>
+        <geometry><box size="0.024942 0.029024 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="0.013657 0.002484 0.080835" rpy="0 0 0"/>
+        <geometry><box size="0.024746 0.028514 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="0.013139 0.002431 0.086769" rpy="0 0 0"/>
+        <geometry><box size="0.023710 0.028407 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="0.012310 0.001277 0.092703" rpy="0 0 0"/>
+        <geometry><box size="0.022052 0.026098 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="0.011223 0.001277 0.098637" rpy="0 0 0"/>
+        <geometry><box size="0.019879 0.026098 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="0.010136 0.001774 0.104571" rpy="0 0 0"/>
+        <geometry><box size="0.017705 0.027094 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="0.009148 0.001633 0.110505" rpy="0 0 0"/>
+        <geometry><box size="0.015730 0.026810 0.005934"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="0.008062 0.001597 0.116439" rpy="0 0 0"/>
+        <geometry><box size="0.013556 0.027619 0.005934"/></geometry>
+      </collision>
+    </link>
+    <link name="${prefix}gr_tcp">
+      <!-- 视觉暂用碰撞盒代替（gripper_jaw_*.STL 缺失） -->
+    </link>
+    <joint name="${prefix}gr_joint1" type="prismatic">
+      <parent link="${prefix}gr_baselink"/>
+      <child link="${prefix}gr_link1"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <axis xyz="-1 0 0"/>
+      <limit lower="0" upper="0.012000" effort="50.000" velocity="0.100"/>
+    </joint>
+    <joint name="${prefix}gr_joint2" type="prismatic">
+      <parent link="${prefix}gr_baselink"/>
+      <child link="${prefix}gr_link2"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <axis xyz="1 0 0"/>
+      <limit lower="0" upper="0.012000" effort="0" velocity="0"/>
+      <mimic joint="${prefix}gr_joint1" multiplier="1" offset="0"/>
+    </joint>
+    <joint name="${prefix}gr_tcp_joint" type="fixed">
+      <parent link="${prefix}gr_baselink"/>
+      <child link="${prefix}gr_tcp"/>
+      <origin xyz="0 0 0.1000" rpy="0 0 0"/>
+    </joint>
+
+  </xacro:macro>
+</robot>

@@ -27,6 +27,12 @@
   <xacro:arg name="refresh_per_cycle" default="2" />
   <xacro:arg name="use_gazebo" default="false" />
 
+  <!-- 夹爪（装配体7 平行夹爪，实测 318.5 g）。默认关闭，不影响原有 ROS 接口 -->
+  <xacro:arg name="with_gripper" default="false" />
+  <xacro:arg name="gripper_xyz" default="0 0 0" />
+  <!-- 夹爪 +z 是接近方向（指向指尖），与 tool0 的 +z 同向 ⇒ 默认 identity -->
+  <xacro:arg name="gripper_rpy" default="0 0 0" />
+
   <!-- config_root 用 $(arg) 而不是 $(find)，这样**构建期**（包还没安装、
        不在 ament 索引里）也能用 `xacro ... config_root:=<绝对路径>` 覆盖。
        传了 arg 之后，默认值里的 $(find) 不会被求值（已实测验证）。
@@ -38,10 +44,20 @@
                   lazy_eval="false" />
 
   <xacro:include filename="utils/hw_arm_robot.xacro" />
+  <xacro:include filename="utils/hw_arm_gripper.xacro" />
   <xacro:include filename="ros2_control/hw_arm.ros2_control.xacro" />
 
   <!-- 几何 / 惯性 -->
   <xacro:hw_arm_robot config_root="${config_root}" prefix="$(arg prefix)" />
+
+  <!-- 末端夹爪（可选） -->
+  <xacro:if value="$(arg with_gripper)">
+    <xacro:hw_arm_gripper
+      prefix="$(arg prefix)"
+      parent="tool0"
+      xyz="$(arg gripper_xyz)"
+      rpy="$(arg gripper_rpy)" />
+  </xacro:if>
 
   <!-- 控制接口 -->
   <xacro:hw_arm_ros2_control

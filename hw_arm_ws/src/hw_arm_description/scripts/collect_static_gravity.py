@@ -414,7 +414,12 @@ def main() -> int:
     ap.add_argument("--speed-scale", type=float, default=1.0,
                     help="再乘一个倍数：>1 更慢，<1 更快")
     ap.add_argument("--settle-time", type=float, default=4.0, help="等待静止上限 s")
-    ap.add_argument("--vel-tol", type=float, default=0.01, help="静止速度阈值 rad/s")
+    # ⚠️ 阈值必须**高于电机速度反馈的量化台阶**，否则永远等不到"静止"：
+    #    12 位速度字段 / VMAX：joint2 (40 rad/s) → 台阶 0.0195 rad/s
+    #    真正停住的电机读数是 ±0.0098 或 ±0.0195，若阈值取 0.01，
+    #    只要有一帧读到 0.0195 就重置计数器 → 永远超时。
+    ap.add_argument("--vel-tol", type=float, default=0.03,
+                    help="静止速度阈值 rad/s（默认 0.03，需高于速度量化台阶 0.0195）")
     ap.add_argument("--settle-count", type=int, default=10)
     ap.add_argument("--max-j2-torque", type=float, default=8.0,
                     help="joint2 预判超过它的位形直接跳过（N·m）")

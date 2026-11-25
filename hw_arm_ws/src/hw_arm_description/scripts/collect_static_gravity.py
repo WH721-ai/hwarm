@@ -88,6 +88,24 @@ def _halton(i: int, base: int) -> float:
     return r
 
 
+def order_by_nearest(poses: list[np.ndarray], start: np.ndarray) -> list[np.ndarray]:
+    """最近邻排序：让相邻两步的关节空间距离最小
+
+    为什么重要：2026-11-25 真机试采时，一次把 joint2 从 0 抬到 0.5 rad，
+    6 台电机同时出力，电源欠压（电机报 0x9）→ 失能 → 机械臂掉下来。
+    排序后每步只动几度，持续电流和峰值都小很多。
+    """
+    left = list(poses)
+    out = []
+    cur = start
+    while left:
+        d = [np.linalg.norm(p - cur) for p in left]
+        i = int(np.argmin(d))
+        out.append(left.pop(i))
+        cur = out[-1]
+    return out
+
+
 def plan_poses(n_main: int, seed: int) -> list[np.ndarray]:
     """规划采集位形
 
@@ -234,6 +252,20 @@ class Collector(Node):
         return False, self.q.copy() if self.q is not None else np.zeros(6)
 
 
+def ask(prompt: str, allow: str = "s q") -> str:
+    """读一行输入；空 = 继续。返回 'go' / 'skip' / 'quit'"""
+    while True:
+        try:
+            ans = input(prompt).strip().lower()
+        except EOFError:
+            return "quit"
+        if ans == "":
+            return "go"
+        if ans and ans[0] in allow:
+            return {"s": "skip", "q": "quit"}.get(ans[0], "go")
+        print(f"  请输入 Enter（继续）/{allow.replace(' ', '（跳过）')}（退出）")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="C-05 静态重力辨识采集")
     ap.add_argument("--urdf", default=None,
@@ -254,6 +286,13 @@ def main() -> int:
     ap.add_argument("--no-bidirectional", action="store_true",
                     help="不做双向采集（不推荐：摩擦无法抵消）")
     ap.add_argument("--dry-run", action="store_true", help="只规划并打印，不动机械臂")
+    ap.add_argument("--keep", type=int, default=0,
+                    help="过滤后最多保留多少个位形（0=全保留）")
+    ap.add_argument("--yes", action="store_true",
+                    help="自动模式（不逐步确认）。默认**每步都要按 Enter**，"
+                         "方便先托住机械臂")
+    ap.add_argument("--confirm-each", choices=["move", "pose"], default="move",
+                    help="确认粒度：move=每次运动前确认（最安全）；pose=每个位形确认一次")
     args = ap.parse_args()
 
     poses = plan_poses(args.poses, args.seed)
@@ -269,18 +308,37 @@ def main() -> int:
             urdf = None
 
     safe, skipped = [], []
-    print(f"\n{'#':>3}  {'j2':>7} {'j3':>7} {'j4':>7} {'j5':>7} {'j6':>7}   "
-          f"{'τ_j2 预判':>10}  结论")
+    rows = []
     for i, q in enumerate(poses):
         g = nominal_gravity(q, urdf, args.gripper_mass) if urdf else None
         j2_tau = abs(g[1]) if g is not None else float("nan")
         ok = (g is None) or (j2_tau <= args.max_j2_torque)
-        print(f"{i:3d}  {math.degrees(q[1]):7.1f} {math.degrees(q[2]):7.1f} "
-              f"{math.degrees(q[3]):7.1f} {math.degrees(q[4]):7.1f} {math.degrees(q[5]):7.1f}   "
-              f"{j2_tau:10.2f}  {'✅' if ok else '⏭️ 跳过（超力矩）'}")
+        rows.append((q, j2_tau, ok))
         (safe if ok else skipped).append(q)
 
-    print(f"\n规划 {len(poses)} 个位形：可用 {len(safe)} 个，跳过 {len(skipped)} 个")
+    # 先截取，再打印 —— 否则表格里会出现"✅ 但其实被 --keep 丢掉的"位形
+    if args.keep > 0 and len(safe) > args.keep:
+        keep_ids = {id(q) for q in safe[:args.keep]}
+        print(f"\n--keep {args.keep}：从 {len(safe)} 个合格位形里取前 {args.keep} 个")
+        safe = safe[:args.keep]
+    else:
+        keep_ids = {id(q) for q in safe}
+
+    print(f"\n{'#':>3}  {'j2':>7} {'j3':>7} {'j4':>7} {'j5':>7} {'j6':>7}   "
+          f"{'τ_j2 预判':>10}  结论")
+    for i, (q, j2_tau, ok) in enumerate(rows):
+        if not ok:
+            mark = "⏭️ 跳过（超力矩）"
+        elif id(q) in keep_ids:
+            mark = "✅ 采用"
+        else:
+            mark = "➖ 合格但未选（--keep）"
+        print(f"{i:3d}  {math.degrees(q[1]):7.1f} {math.degrees(q[2]):7.1f} "
+              f"{math.degrees(q[3]):7.1f} {math.degrees(q[4]):7.1f} {math.degrees(q[5]):7.1f}   "
+              f"{j2_tau:10.2f}  {mark}")
+
+    print(f"\n规划 {len(poses)} 个候选：合格 {len(rows)-len(skipped)} 个，"
+          f"超力矩 {len(skipped)} 个，**最终采用 {len(safe)} 个**")
     if not safe:
         print("❌ 没有可用位形")
         return 1
@@ -288,57 +346,120 @@ def main() -> int:
         print("\n（--dry-run：不接触机械臂，退出）")
         return 0
 
-    # ── 真机采集 ──
+    # ── 真机采集（默认**逐步人工确认**）──
+    interactive = not args.yes
+
     rclpy.init()
     node = Collector(args)
     try:
         if not node.wait_state(10.0):
             print("❌ 收不到 /joint_states —— 请确认 bringup 已启动")
             return 1
-        print(f"\n收到关节状态，起始位形 = {np.round(node.q, 4)}")
-        print(f"起始实测力矩 = {np.round(node.tau, 3)}")
+
+        q_now = np.array(node.q)
+        print(f"\n起始位形 q = {np.round(q_now, 4)}")
+        print(f"起始实测 τ  = {np.round(node.tau, 3)}")
+
+        # 按最近邻排序，减少每步的运动量
+        safe = order_by_nearest(safe, q_now)
+        print(f"\n已按最近邻排序（每步运动量最小）。共 {len(safe)} 个位形。")
+
+        if interactive:
+            print("""
+┌──────────────────────────────────────────────────────────────┐
+│ 交互模式：每一步都会停下来等你按 Enter                        │
+│   Enter = 继续          s = 跳过这一步        q = 退出采集     │
+│ ⚠️ 按 Enter 前请先托住机械臂 —— 发生过欠压失能导致掉落          │
+└──────────────────────────────────────────────────────────────┘""")
 
         samples = []
+        aborted = False
         for i, q_goal in enumerate(safe):
-            print(f"\n── 位形 {i+1}/{len(safe)}  j2={math.degrees(q_goal[1]):.1f}° "
-                  f"j3={math.degrees(q_goal[2]):.1f}° ──")
+            print(f"\n══ 位形 {i+1}/{len(safe)} ══  "
+                  f"j2={math.degrees(q_goal[1]):6.1f}°  j3={math.degrees(q_goal[2]):6.1f}°  "
+                  f"j4={math.degrees(q_goal[3]):6.1f}°  j5={math.degrees(q_goal[4]):6.1f}°  "
+                  f"j6={math.degrees(q_goal[5]):6.1f}°")
+            # 力矩预判再显示一次（用于判断要不要托）
+            g_pre = nominal_gravity(q_goal, urdf, args.gripper_mass)
+            if g_pre is not None:
+                print(f"   预判 τ = {np.round(g_pre, 2)}   （|τ_j2|={abs(g_pre[1]):.2f} N·m）")
 
-            # 双向：先从当前位形直接过去（记为 A），再绕一个小回路回来（记为 B）
+            if interactive:
+                act = ask("  ▶ 托好机械臂后按 Enter 开始运动（s 跳过 / q 退出）: ")
+                if act == "quit":
+                    print("  已退出"); aborted = True; break
+                if act == "skip":
+                    print("  跳过"); continue
+
+            # ── 运动前检查：控制器是否还活着 ──
+            if node.q is None or (time.monotonic() - (node.last_stamp or 0)) > 1.0:
+                print("  ❌ 关节状态中断（控制器可能被 deactivate）—— 停止采集")
+                aborted = True; break
+
             if not node.move_to(q_goal, args.move_time):
-                print("运动被中止")
-                break
+                print("  ❌ 运动被中止（力矩超限）")
+                aborted = True; break
+
+            # ── 掉电检测：运动后位置应接近目标 ──
+            time.sleep(0.4)
+            for _ in range(6):
+                rclpy.spin_once(node, timeout_sec=0.05)
+            if node.q is not None:
+                dev = np.max(np.abs(np.array(node.q) - q_goal))
+                if dev > 0.6:
+                    print(f"  ❌ 实际位置离目标差 {dev:.2f} rad —— **疑似掉电/失能**，立即停止")
+                    print(f"     实际 q = {np.round(node.q, 3)}")
+                    aborted = True; break
+                if np.all(np.abs(np.array(node.tau)) < 1e-6):
+                    print("  ❌ 力矩突然全为 0 —— **疑似掉电**，立即停止")
+                    aborted = True; break
+
             ok, qa = node.wait_settle(args.vel_tol, args.settle_count, args.settle_time)
             if not ok:
-                print("  ⚠️ 没等到静止，跳过")
-                continue
+                print("  ⚠️ 没等到静止 —— 可能是支撑不足或被卡住")
+                if interactive:
+                    act = ask("  仍要记录吗？（Enter 记录 / s 跳过 / q 退出）: ")
+                    if act == "quit": aborted = True; break
+                    if act == "skip": continue
+                else:
+                    continue
+
             if abs(node.tau[1]) > args.abort_j2_torque:
-                print(f"  ❌ 实测 joint2 力矩 {node.tau[1]:.2f} 超限，停止采集")
-                break
-            samples.append({"q": qa.tolist(), "tau": node.tau.copy().tolist(),
-                            "tag": "A"})
+                print(f"  ❌ 实测 joint2 力矩 {node.tau[1]:.2f} 超限，停止收集")
+                aborted = True; break
+
+            samples.append({"q": list(qa), "tau": node.tau.copy().tolist(), "tag": "A"})
             print(f"  A: τ = {np.round(node.tau, 3)}")
+
+            if interactive:
+                act = ask("  ▶ Enter 记录 A 并继续；s 丢弃这一条：")
+                if act == "quit": aborted = False; break     # 记录完A直接收工
+                if act == "skip": samples.pop()
 
             if args.no_bidirectional:
                 continue
 
-            # B：先把 joint2 偏 -偏差，再回到目标 —— 摩擦方向相反
+            # ── B：先偏一点再回来，让静摩擦方向相反 ──
             off = q_goal.copy()
-            off[1] -= math.radians(6.0)
-            off[2] += math.radians(4.0)
+            off[1] -= math.radians(4.0)     # 幅度从 6° 降到 4°，减小电流
+            off[2] += math.radians(3.0)
+            if interactive and args.confirm_each == "move":
+                act = ask("  ▶ Enter 执行反向接近（s 跳过 B / q 退出）: ")
+                if act == "quit": aborted = False; break
+                if act == "skip": continue
             if not node.move_to(off, args.move_time * 0.6):
-                break
+                aborted = True; break
             node.wait_settle(args.vel_tol, args.settle_count, args.settle_time)
             if not node.move_to(q_goal, args.move_time * 0.6):
-                break
+                aborted = True; break
             ok, qb = node.wait_settle(args.vel_tol, args.settle_count, args.settle_time)
             if not ok:
                 print("  ⚠️ B 方向没等到静止，跳过")
                 continue
             if abs(node.tau[1]) > args.abort_j2_torque:
-                print(f"  ❌ 实测 joint2 力矩 {node.tau[1]:.2f} 超限，停止采集")
-                break
-            samples.append({"q": qb.tolist(), "tau": node.tau.copy().tolist(),
-                            "tag": "B"})
+                print(f"  ❌ 实测 joint2 力矩 {node.tau[1]:.2f} 超限，停止收集")
+                aborted = True; break
+            samples.append({"q": list(qb), "tau": node.tau.copy().tolist(), "tag": "B"})
             print(f"  B: τ = {np.round(node.tau, 3)}")
             fr = (np.array(samples[-2]["tau"]) - np.array(samples[-1]["tau"])) / 2.0
             print(f"  库仑摩擦估计 = {np.round(fr, 3)}")
@@ -353,14 +474,16 @@ def main() -> int:
             with open(args.out, "w") as f:
                 yaml.safe_dump({"samples": samples,
                                 "meta": {"urdf": urdf, "n": len(samples),
+                                         "aborted": aborted,
                                          "bidirectional": not args.no_bidirectional}},
                                f, allow_unicode=True, sort_keys=False)
         except ImportError:
             import json
             with open(args.out, "w") as f:
                 json.dump({"samples": samples}, f)
-        print(f"\n✅ 采集 {len(samples)} 个样本 → {args.out}")
-        print("   下一步：gravity_id_cli --urdf {} --samples {}".format(urdf, args.out))
+        tag = "（中途停止）" if aborted else ""
+        print(f"\n✅ 采集 {len(samples)} 个样本 → {args.out} {tag}")
+        print(f"   下一步：gravity_id_cli --urdf {urdf} --samples {args.out}")
         return 0
     finally:
         node.destroy_node()

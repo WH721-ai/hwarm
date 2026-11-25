@@ -754,3 +754,116 @@ fo.require_collision_check = true;   // ← 忘了传回调会明确报错，不
 10. 永远返回"碰撞"的回调 → 候选被拒
 11. 真实 `CollisionModel` 做回调 → home 附近小位移通过
 
+---
+
+## 十、批次 1 修复（2026-11-25）：把"假保护"变成真保护
+
+对应审查报告的 **C03 / C04 / C01**。修完之前，碰撞检查在真机链路上**一次都没跑过**，
+且失效时会返回"安全"。
+
+### 10.1 C03：三种状态取代 bool
+
+**新增 `collision_types.hpp`：**
+
+```cpp
+enum class CheckStatus { kFree, kCollision, kInvalid };
+struct CheckResult {
+  CheckStatus status = CheckStatus::kInvalid;   // ★ 默认就是失败关闭
+  int pair_index; std::string detail; double min_distance;
+  bool is_free(); bool is_collision(); bool is_invalid();
+  explicit operator bool() const { return is_free(); }  // Invalid 绝不放行
+};
+```
+
+**修掉的静默放行：**
+
+| 旧行为 | 新行为 |
+|---|---|
+| `!cm.valid()` → `colliding=false`（安全） | → **kInvalid** |
+| 空关键点回调 → `return true`（通过） | → **kInvalid** |
+| `pts.cols()==0` → `return true` | → **kInvalid** |
+| 找不到 frame → 用 `(0,0,0)` 顶替 | → **kInvalid**（返回 0 列，不再伪造点） |
+| `margin=NaN` → `d < NaN` 恒假 → 永不拒绝 | → **kInvalid** |
+| `margin<0` | → **kInvalid** |
+| `rows()!=3` 仍读第 3 行 | → **kInvalid** |
+| q 维度错/含 NaN | → **kInvalid** |
+| URDF 无 collision 标签 → 空模型但 valid=true | → build **失败** |
+| 排除相邻后 0 个碰撞对 | → build **失败** |
+
+### 10.2 C04：先确定有效对，再逐对查询
+
+```cpp
+// 旧：全局 early-exit，然后遍历**未更新**的结果
+computeCollisions(geom, gdata, /*stopAtFirstCollision=*/true);
+for (k...) { if (result[k].isCollision()) { if (是EE) continue; return hit; } }
+//   ↑ 若对 0 是 EE 且真碰撞，查询停在 0，对 1..N 从没被本次更新
+
+// 新：按有效对逐对查，只读本轮结果
+for (k...) {
+  if (!check_ee && cm.pairIsEndEffector(k)) continue;
+  if (computeCollision(geom, gdata, k)) return collision(...);
+}
+```
+
+**EE 标记也改成结构化**：`CollisionModel::setEndEffectorLinks({"link6","gripper_base"})`
+在 build 时按**精确 link 名**预计算 `pair_is_ee_[]`，不再用
+`{"gripper","finger","tool","ee_","hand"}` 子串猜测。
+
+### 10.3 C01：ik_cli 真正装配碰撞检查
+
+- **默认开启**；`--no-collision` 必须显式给，且向 stderr 打警告
+- 模型构建失败 → **退出码 3**，不回退成"无碰撞模式"
+- `require_collision_check = true`（回调缺失 → selectSolution 明确报错）
+- 新参数：`--no-self-collision` `--no-table` `--collision-margin`
+  `--table-z` `--table-margin` `--ee-links`
+- 输出新增：`collision_checked` `collision_self` `collision_table`
+  `collision_pairs` `collision_margin` `table_z` `table_margin`
+  `collision_model`（模型指纹） `min_self_distance_from`
+
+**ik_selection 的语义也跟着改：**
+回调返回 `kInvalid` ⇒ **整个选解失败**（`ok=false` + 原因），
+而不是只丢一个候选 —— 检查器坏了，任何结论都不可信。
+
+### 10.4 实现中新引入并修掉的一个 bug
+
+```cpp
+// ❌ 第一版：key_fn / topt 声明在 else 块里，回调按引用捕获
+{
+  auto key_fn = makeTool0KeyPoints(...);
+  TableConstraintOptions topt;
+  opt.filter.collision_check = [&](...) { ... 用 key_fn / topt ... };
+}   // ← 块结束，key_fn / topt 析构
+selectBestIK(...);   // ← 回调被调用时是**悬空引用**（UB）
+```
+
+症状：桌面设成 5 m 也照样通过。修法：把这两个对象提到 `if` 之外。
+
+### 10.5 修复后的验证
+
+**单元测试：25 个（原 11 → 25），覆盖 C03/C04 的每条静默放行路径。**
+
+**新增 CLI 集成测试 `test_ik_cli_collision.sh`（只跑算法 CLI，不接机器人）：**
+
+| 用例 | 断言 | 结果 |
+|---|---|---|
+| 正常目标 | `ok: true` + `collision_checked: true` + `collision_pairs: 15` + 模型指纹 | ✅ |
+| 穿桌面目标（TCP z=−0.127） | `ok: false` + 原因含"碰撞/穿桌面" | ✅ |
+| 关掉桌面检查的同一目标 | `ok: true` —— **证明是桌面拒的** | ✅ |
+| URDF 不存在 | 非零退出（rc=3），不静默降级 | ✅ |
+
+**全包：75 个测试全过；全工作区 8 个包构建通过。**
+
+### 10.6 批次 1 之后仍然存在的问题
+
+| ID | 问题 | 状态 |
+|---|---|---|
+| **C02** | 桌面仍只查 TCP 一个点 | ❌ 批次 2 |
+| C05 | 固定 20 点采样，无连续保证 | ❌ 批次 3 |
+| C06 | goto_xyz 改首路点不重校验 | ❌ 批次 3 |
+| C07 | 凸包 1693/3386 面朝内 | ❌ 批次 4 |
+| C08 | hull 与 URDF 无完整性绑定 | ❌ 批次 4 |
+| C09 | EE 支持（夹爪几何） | ❌ 批次 4 |
+
+**⚠️ 文档第 65 行「位置控制下不会偏离」的说法仍然是错的**
+（JTC 容差 0.09 rad ≈ 0.5 m 处 45 mm，而 home 间隙只有 3.5 mm），
+这条留到批次 2 连同 margin 预算一起改。

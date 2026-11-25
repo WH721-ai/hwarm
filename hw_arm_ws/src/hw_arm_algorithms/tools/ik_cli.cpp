@@ -36,7 +36,9 @@
 //   message: "..."
 #include <cerrno>
 #include <cmath>
+#include <cmath>
 #include <cstdio>
+#include <memory>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -46,6 +48,9 @@
 #include <Eigen/Geometry>
 
 #include "hw_arm_algorithms/data.hpp"
+#include "hw_arm_algorithms/collision_model.hpp"
+#include "hw_arm_algorithms/collision_robot.hpp"
+#include "hw_arm_algorithms/collision_world.hpp"
 #include "hw_arm_algorithms/ik_selection.hpp"
 #include "hw_arm_algorithms/model.hpp"
 
@@ -118,6 +123,15 @@ int main(int argc, char** argv) {
   std::string vmax_s, amax_s;
   bool verbose = false;
 
+  // ── 碰撞检查（★ 默认开启。关掉必须显式 --no-collision，且会打警告）──
+  bool check_collision = true;
+  bool check_self = true;
+  bool check_table = true;
+  double collision_margin = 0.0;  // 自碰撞余量，m（home 间隙仅 3.5 mm）
+  double table_z = 0.0;           // 桌面在 world 系的 z
+  double table_margin = 0.01;     // 桌面余量，m
+  std::string ee_links_s;         // 逗号分隔的末端 link 名
+
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> std::string { return (i + 1 < argc) ? argv[++i] : ""; };
@@ -138,6 +152,13 @@ int main(int argc, char** argv) {
     else if (a == "--vmax") vmax_s = next();
     else if (a == "--amax") amax_s = next();
     else if (a == "--verbose") verbose = true;
+    else if (a == "--no-collision") check_collision = false;
+    else if (a == "--no-self-collision") check_self = false;
+    else if (a == "--no-table") check_table = false;
+    else if (a == "--collision-margin") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--collision-margin 不是合法数字\n"); return 2; } collision_margin = v; }
+    else if (a == "--table-z") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--table-z 不是合法数字\n"); return 2; } table_z = v; }
+    else if (a == "--table-margin") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--table-margin 不是合法数字\n"); return 2; } table_margin = v; }
+    else if (a == "--ee-links") ee_links_s = next();
     else if (a == "-h" || a == "--help") { usage(); return 0; }
     else { std::fprintf(stderr, "未知参数: %s\n", a.c_str()); usage(); return 2; }
   }
@@ -253,6 +274,60 @@ int main(int argc, char** argv) {
     }
   }
 
+  // ── ★ 碰撞上下文装配（审查报告 C01）──
+  //
+  // C01 的教训：库里有接口、测试里有回调、文档里有示例，
+  // 但**实际入口从来没装配** → 真机链路上碰撞检测一行都没跑。
+  // 这里改成：默认开启，模型建不起来就**退出**（不回退成「无碰撞模式」）。
+  //
+  // ⚠️ collision_model / key_fn / topt 必须声明在 if 之外：
+  //    回调按引用捕获，若在 else 块里声明，块结束时被析构 → 悬空引用。
+  std::unique_ptr<hw_arm_algorithms::CollisionModel> collision_model;
+  hw_arm_algorithms::KeyPointFn key_fn;
+  hw_arm_algorithms::TableConstraintOptions topt;
+
+  if (!check_collision) {
+    std::fprintf(stderr,
+        "⚠️⚠️ 已用 --no-collision 关闭碰撞检查 —— 本轨迹**未经过碰撞验证**\n");
+  } else {
+    collision_model = std::make_unique<hw_arm_algorithms::CollisionModel>();
+    if (!collision_model->build(model, urdf)) {
+      std::fprintf(stderr,
+          "❌ 碰撞模型构建失败（凸包数据缺失或 URDF 无 collision 标签）\n"
+          "   不会退回到「无碰撞」模式 —— 拒绝继续\n");
+      return 3;
+    }
+    if (!ee_links_s.empty()) {
+      std::vector<std::string> ee;
+      std::string cur;
+      for (char c : ee_links_s) {
+        if (c == ',') { if (!cur.empty()) ee.push_back(cur); cur.clear(); }
+        else cur.push_back(c);
+      }
+      if (!cur.empty()) ee.push_back(cur);
+      collision_model->setEndEffectorLinks(ee);
+    }
+
+    key_fn = hw_arm_algorithms::makeTool0KeyPoints(frame_name);
+    topt.z_table = table_z;
+    topt.margin = table_margin;
+
+    opt.filter.collision_check = [&](const Eigen::VectorXd& q) {
+      if (check_self) {
+        hw_arm_algorithms::SelfCollisionOptions sop;
+        sop.margin = collision_margin;
+        const auto r = hw_arm_algorithms::checkSelfCollision(*collision_model, q, sop);
+        if (!r.is_free()) return r;
+      }
+      if (check_table) {
+        const auto r = hw_arm_algorithms::checkTable(model, ws, q, key_fn, topt);
+        if (!r.is_free()) return r;
+      }
+      return hw_arm_algorithms::CheckResult::free();
+    };
+    opt.filter.require_collision_check = true;   // 强制：回调必须存在
+  }
+
   // ── ★ 唯一一次计算调用 ──
   const auto res =
       hw_arm_algorithms::selectBestIK(model, ws, frame, target, q_now, opt);
@@ -275,6 +350,27 @@ int main(int argc, char** argv) {
   std::printf("n_candidates: %d\n", res.n_candidates);
   std::printf("n_accepted: %d\n", res.n_accepted);
   std::printf("message: \"%s\"\n", res.message.c_str());
+
+  // ── 碰撞检查的元信息（发送端不能只看 ok）──
+  if (check_collision) {
+    std::printf("collision_checked: true\n");
+    std::printf("collision_self: %s\n", check_self ? "true" : "false");
+    std::printf("collision_table: %s\n", check_table ? "true" : "false");
+    std::printf("collision_pairs: %d\n", collision_model->numPairs());
+    std::printf("collision_margin: %.6g\n", collision_margin);
+    std::printf("table_z: %.6g\n", table_z);
+    std::printf("table_margin: %.6g\n", table_margin);
+    std::printf("collision_model: \"%s\"\n", collision_model->fingerprint().c_str());
+    const double dmin = hw_arm_algorithms::minSelfDistance(*collision_model, q_now);
+    if (std::isfinite(dmin)) {
+      std::printf("min_self_distance_from: %.6g\n", dmin);
+    } else {
+      std::printf("min_self_distance_from: nan\n");
+    }
+  } else {
+    std::printf("collision_checked: false\n");
+    std::printf("collision_model: \"disabled\"\n");
+  }
 
   if (verbose) {
     std::printf("candidates:\n");

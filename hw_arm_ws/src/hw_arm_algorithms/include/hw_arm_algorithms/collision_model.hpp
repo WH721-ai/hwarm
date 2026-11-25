@@ -40,27 +40,45 @@ class CollisionModel {
   ///   ① 读 URDF 的 collision 标签
   ///   ② 把每个 mesh 换成对应的凸包（数据来自 collision_hulls.hpp）
   ///   ③ 生成碰撞对，并排除"相邻连杆"（用关节父子关系自动推导）
+  ///   ④ 校验：几何体数量、每个几何都有 hull、碰撞对非空
   bool build(const RobotModel& model, const std::string& urdf_path);
+
+  /// 标记哪些 link 属于末端执行器（**精确名字匹配**，不是子串猜测）。
+  /// build 之后调用；会影响哪几对碰撞对被视作"末端相关"。
+  void setEndEffectorLinks(const std::vector<std::string>& link_names);
 
   /// 更新所有几何体的世界位姿（每个 q 必须调一次）
   void updatePlacements(const Eigen::VectorXd& q);
 
-  /// 供 computeCollisions / computeCollision 使用
   pinocchio::GeometryModel& geom() { return geom_; }
   pinocchio::GeometryData& geomData() { return *data_; }
 
+  int nq() const { return model_ ? model_->nq : 0; }
   int numPairs() const { return static_cast<int>(pair_names_.size()); }
   std::string pairName(int idx) const;
   const std::vector<std::string>& pairNames() const { return pair_names_; }
+
+  /// 该碰撞对是否涉及末端执行器
+  bool pairIsEndEffector(int idx) const;
+
+  /// 模型指纹：用于在日志/结果里标明"这次检查用的是哪套几何"
+  std::string fingerprint() const { return fingerprint_; }
 
   bool valid() const { return valid_; }
 
  private:
   pinocchio::GeometryModel geom_;
   std::unique_ptr<pinocchio::GeometryData> data_;
-  std::unique_ptr<pinocchio::Data> model_data_;   // FK 用（updateGeometryPlacements 需要）
+  std::unique_ptr<pinocchio::Data> model_data_;
   const pinocchio::Model* model_ = nullptr;
+
   std::vector<std::string> pair_names_;
+  std::vector<int> pair_first_geo_;
+  std::vector<int> pair_second_geo_;
+  std::vector<std::string> geo_link_names_;   ///< 每个几何体所属 link 名（去掉 _N 后缀）
+  std::vector<bool> pair_is_ee_;
+
+  std::string fingerprint_;
   bool valid_ = false;
 };
 

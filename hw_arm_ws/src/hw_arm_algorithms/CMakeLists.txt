@@ -160,6 +160,11 @@ if(BUILD_TESTING)
   target_compile_definitions(test_ik_selection PRIVATE
     HW_ARM_DEFAULT_URDF="${HW_ARM_TEST_URDF}")
 
+
+  # ik_cli 碰撞检查集成测试（审查报告 C01）：只跑算法 CLI，不接机器人
+  add_test(NAME test_ik_cli_collision
+           COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test/test_ik_cli_collision.sh
+                   $<TARGET_FILE:ik_cli> ${HW_ARM_TEST_URDF})
   # 碰撞检测
   ament_add_gtest(test_collision test/test_collision.cpp)
   target_link_libraries(test_collision ${PROJECT_NAME})

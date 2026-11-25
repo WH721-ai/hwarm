@@ -33,6 +33,7 @@
 #include <Eigen/Core>
 #include <pinocchio/multibody/fwd.hpp>
 
+#include "hw_arm_algorithms/collision_types.hpp"
 #include "hw_arm_algorithms/kinematics.hpp"
 #include "hw_arm_algorithms/model.hpp"
 
@@ -76,7 +77,11 @@ struct SolutionFilterOptions {
   // 回调返回 **true = 撞了 / 不可行**（与 reject 语义一致）。
   // 为空且 require_collision_check=true 时直接报错，而不是静默跳过
   //（R2 的教训：空向量静默关闭保护）。
-  std::function<bool(const Eigen::VectorXd&)> collision_check;
+  /// 返回 CheckResult：
+  ///   kFree      → 放行
+  ///   kCollision → 拒绝该候选
+  ///   kInvalid   → **整个选解失败**（检查器本身不可信，不能只丢一个候选）
+  std::function<CheckResult(const Eigen::VectorXd&)> collision_check;
   bool require_collision_check = false;
 
   /// 峰值系数：三次插值 1.5/6.0，五次插值 1.875/5.77

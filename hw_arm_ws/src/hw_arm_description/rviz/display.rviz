@@ -111,6 +111,16 @@ Visualization Manager:
         All Enabled: true
         base_link:
           Value: true
+        link1:
+          Value: true
+        link2:
+          Value: true
+        link3:
+          Value: true
+        link4:
+          Value: true
+        link5:
+          Value: true
         link6:
           Value: true
         tool0:
@@ -125,7 +135,14 @@ Visualization Manager:
       Tree:
         world:
           base_link:
-            {}
+            link1:
+              link2:
+                link3:
+                  link4:
+                    link5:
+                      link6:
+                        tool0:
+                          {}
       Update Interval: 0
       Value: true
   Enabled: true
@@ -150,18 +167,18 @@ Visualization Manager:
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.18392260372638702
-        Y: 0.20830267667770386
-        Z: 0.020543329417705536
+        X: -0.037975676357746124
+        Y: 0.008549880236387253
+        Z: 0.07312877476215363
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.48999980092048645
+      Pitch: 0.654999852180481
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 0.3400006890296936
+      Yaw: 0.7950013875961304
     Saved: ~
 Window Geometry:
   Displays:

@@ -236,14 +236,23 @@ SelectionResult selectSolution(const RobotModel& model, RobotWorkspace& ws,
     // 实测成本：凸包 9.1 µs/点，20 点路径 ≈ 0.2 ms。
     if (filter.collision_check) {
       bool path_hit = false;
+      std::string invalid_reason;
       const int n = std::max(2, filter.path_samples);
-      for (int kk = 0; kk < n; ++kk) {
+      for (int kk = 0; kk < n && invalid_reason.empty(); ++kk) {
         const double ss = static_cast<double>(kk) / (n - 1);
         const Eigen::VectorXd qq = pinocchio::interpolate(model.pin(), q_now, ev.q, ss);
-        if (filter.collision_check(qq)) {
+        const CheckResult cr = filter.collision_check(qq);
+        if (cr.is_invalid()) {
+          // ★ 检查器失效 ⇒ 整个选解都不能信，直接中止（不是只丢这个候选）
+          invalid_reason = cr.detail;
+        } else if (cr.is_collision()) {
           path_hit = true;
-          break;
         }
+      }
+      if (!invalid_reason.empty()) {
+        out.ok = false;
+        out.message = "碰撞检查无效：" + invalid_reason;
+        return out;
       }
       ev.path_collided = path_hit;
       if (path_hit) {
@@ -252,7 +261,13 @@ SelectionResult selectSolution(const RobotModel& model, RobotWorkspace& ws,
         continue;
       }
       // 终点单独再查一次（路径采样是离散的，端点最要紧）
-      if (filter.collision_check(ev.q)) {
+      const CheckResult cr_end = filter.collision_check(ev.q);
+      if (cr_end.is_invalid()) {
+        out.ok = false;
+        out.message = "碰撞检查无效（终点）：" + cr_end.detail;
+        return out;
+      }
+      if (cr_end.is_collision()) {
         ev.collided = true;
         reject("终点碰撞/穿桌面");
         out.candidates.push_back(ev);

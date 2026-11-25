@@ -4,9 +4,10 @@
 #include "hw_arm_algorithms/collision_model.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <iostream>
-#include <map>
 #include <set>
+#include <sstream>
 
 #include <coal/shape/convex.h>
 #include <pinocchio/algorithm/geometry.hpp>
@@ -29,7 +30,6 @@ std::shared_ptr<coal::CollisionGeometry> makeConvex(
   for (int i = 0; i < h.num_points; ++i) {
     pts->emplace_back(h.points[3 * i + 0], h.points[3 * i + 1], h.points[3 * i + 2]);
   }
-
   auto polys = std::make_shared<std::vector<coal::Triangle>>();
   polys->reserve(static_cast<size_t>(h.num_triangles));
   for (int i = 0; i < h.num_triangles; ++i) {
@@ -37,19 +37,26 @@ std::shared_ptr<coal::CollisionGeometry> makeConvex(
                         static_cast<unsigned>(h.triangles[3 * i + 1]),
                         static_cast<unsigned>(h.triangles[3 * i + 2]));
   }
-
   auto* conv = new coal::Convex<coal::Triangle>(
       pts, static_cast<unsigned>(h.num_points), polys,
       static_cast<unsigned>(h.num_triangles));
   return std::shared_ptr<coal::CollisionGeometry>(conv);
 }
 
-/// 找到与某个 link 名对应的凸包数据；找不到返回 nullptr
 const collision_hulls::HullData* findHull(const std::string& link_name) {
   for (int i = 0; i < collision_hulls::kNumHulls; ++i) {
     if (link_name == collision_hulls::kHulls[i].link) return &collision_hulls::kHulls[i];
   }
   return nullptr;
+}
+
+/// "link6_0" → "link6"；"base_link_0" → "base_link"
+std::string stripSuffix(const std::string& name) {
+  const auto pos = name.rfind('_');
+  if (pos == std::string::npos) return name;
+  const std::string tail = name.substr(pos + 1);
+  if (tail.empty() || !std::all_of(tail.begin(), tail.end(), ::isdigit)) return name;
+  return name.substr(0, pos);
 }
 
 }  // namespace
@@ -59,9 +66,17 @@ CollisionModel::~CollisionModel() = default;
 bool CollisionModel::build(const RobotModel& model, const std::string& urdf_path) {
   valid_ = false;
   pair_names_.clear();
+  pair_first_geo_.clear();
+  pair_second_geo_.clear();
+  geo_link_names_.clear();
+  pair_is_ee_.clear();
+  fingerprint_.clear();
   data_.reset();
 
-  if (!model.valid()) return false;
+  if (!model.valid()) {
+    std::cerr << "[collision_model] RobotModel 无效\n";
+    return false;
+  }
 
   // ── ① 读 URDF 的 collision 标签 ──
   try {
@@ -73,17 +88,16 @@ bool CollisionModel::build(const RobotModel& model, const std::string& urdf_path
     return false;
   }
 
+  // ★ C03：空模型不能当"完整机器人"（URDF 没有 collision 标签时这里会是 0）
+  if (geom_.geometryObjects.empty()) {
+    std::cerr << "[collision_model] URDF 里没有 collision 几何体\n";
+    return false;
+  }
+
   // ── ② 每个 mesh → 凸包 ──
+  geo_link_names_.reserve(geom_.geometryObjects.size());
   for (auto& obj : geom_.geometryObjects) {
-    // obj.name 形如 "base_link_0"，取 "_0" 前的前缀
-    std::string base = obj.name;
-    const auto pos = base.rfind('_');
-    if (pos != std::string::npos) {
-      const std::string tail = base.substr(pos + 1);
-      if (!tail.empty() && std::all_of(tail.begin(), tail.end(), ::isdigit)) {
-        base = base.substr(0, pos);
-      }
-    }
+    const std::string base = stripSuffix(obj.name);
     const auto* h = findHull(base);
     if (h == nullptr) {
       std::cerr << "[collision_model] 没有 " << base
@@ -91,6 +105,7 @@ bool CollisionModel::build(const RobotModel& model, const std::string& urdf_path
       return false;
     }
     obj.geometry = makeConvex(*h);
+    geo_link_names_.push_back(base);
   }
 
   // ── ③ 碰撞对：全部 + 排除相邻 ──
@@ -98,38 +113,55 @@ bool CollisionModel::build(const RobotModel& model, const std::string& urdf_path
   //    不调 addAllCollisionPairs() 的话 computeCollisions 永远返回 false（假阴性）。
   geom_.addAllCollisionPairs();
 
-  // 相邻判定：两个几何体的 parentJoint 相同、或直接是父子关节 → 相邻
-  const auto& parents = model.pin().parents;   // parents[j] = 关节 j 的父关节
-  std::vector<size_t> kept;
+  const auto& parents = model.pin().parents;
+  pinocchio::GeometryModel::CollisionPairVector pairs;
   for (size_t k = 0; k < geom_.collisionPairs.size(); ++k) {
     const auto& cp = geom_.collisionPairs[k];
     const auto& a = geom_.geometryObjects[cp.first];
     const auto& b = geom_.geometryObjects[cp.second];
-    const auto ja = a.parentJoint;
-    const auto jb = b.parentJoint;
-    if (ja == jb) continue;                       // 同一连杆上的两个几何体
-    const bool adjacent = (parents[ja] == jb) || (parents[jb] == ja);
-    if (adjacent) continue;
-    kept.push_back(k);
+    if (a.parentJoint == b.parentJoint) continue;          // 同一连杆上的两个几何体
+    if (parents[a.parentJoint] == b.parentJoint) continue;  // 直接父子
+    if (parents[b.parentJoint] == a.parentJoint) continue;
+    pairs.push_back(cp);
   }
-
-  // 用"保留列表"重建碰撞对
-  pinocchio::GeometryModel::CollisionPairVector pairs;
-  pairs.reserve(kept.size());
-  for (size_t k : kept) pairs.push_back(geom_.collisionPairs[k]);
   geom_.collisionPairs = pairs;
 
-  pair_names_.reserve(pairs.size());
+  // ★ C03：没有碰撞对 ⇒ 后续任何"无碰撞"都是假的
+  if (pairs.empty()) {
+    std::cerr << "[collision_model] 排除相邻后没有剩余碰撞对，模型不可用\n";
+    return false;
+  }
+
   for (const auto& cp : pairs) {
+    pair_first_geo_.push_back(static_cast<int>(cp.first));
+    pair_second_geo_.push_back(static_cast<int>(cp.second));
     pair_names_.push_back(geom_.geometryObjects[cp.first].name + " <-> " +
                           geom_.geometryObjects[cp.second].name);
   }
+  pair_is_ee_.assign(pair_names_.size(), false);
 
   data_ = std::make_unique<pinocchio::GeometryData>(geom_);
   model_data_ = std::make_unique<pinocchio::Data>(model.pin());
   model_ = &model.pin();
+
+  std::ostringstream fp;
+  fp << "hulls=" << collision_hulls::kNumHulls
+     << " geoms=" << geom_.geometryObjects.size()
+     << " pairs=" << pair_names_.size()
+     << " urdf=" << urdf_path;
+  fingerprint_ = fp.str();
+
   valid_ = true;
   return true;
+}
+
+void CollisionModel::setEndEffectorLinks(const std::vector<std::string>& link_names) {
+  const std::set<std::string> ee(link_names.begin(), link_names.end());
+  for (size_t k = 0; k < pair_names_.size(); ++k) {
+    const std::string& la = geo_link_names_[pair_first_geo_[k]];
+    const std::string& lb = geo_link_names_[pair_second_geo_[k]];
+    pair_is_ee_[k] = ee.count(la) > 0 || ee.count(lb) > 0;
+  }
 }
 
 void CollisionModel::updatePlacements(const Eigen::VectorXd& q) {
@@ -140,6 +172,11 @@ void CollisionModel::updatePlacements(const Eigen::VectorXd& q) {
 std::string CollisionModel::pairName(int idx) const {
   if (idx < 0 || idx >= static_cast<int>(pair_names_.size())) return "?";
   return pair_names_[static_cast<size_t>(idx)];
+}
+
+bool CollisionModel::pairIsEndEffector(int idx) const {
+  if (idx < 0 || idx >= static_cast<int>(pair_is_ee_.size())) return false;
+  return pair_is_ee_[static_cast<size_t>(idx)];
 }
 
 }  // namespace hw_arm_algorithms

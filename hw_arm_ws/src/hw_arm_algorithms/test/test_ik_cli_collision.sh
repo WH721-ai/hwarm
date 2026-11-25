@@ -24,16 +24,21 @@ check() { # 名称 期望子串 输出
   fi
 }
 
-echo "── ① 正常目标（TCP z=+0.104，桌面上方）──"
+# ⚠️ 2026-11-26：夹爪进 URDF 后，tool0 之外还多伸出 119.4 mm，
+#    原来那个目标（TCP z=+0.104）会让**夹爪**穿到桌面以下 32.6 mm。
+#    现在用的目标是从"关节限位内随机采样、筛掉夹爪最低点 < 80 mm"的位形里取的，
+#    路径最低点 2.4 mm，自碰撞距离 3.5 mm。
+echo "── ① 正常目标（夹爪最低点离桌面还有余量）──"
 OUT=$("$CLI" --urdf "$URDF" \
-  --seed "0 1.5 0.2 0 0.6 0" \
-  --target "0.217075 0.122538 0.104149 0.724936 -0.511838 0.188584 -0.420626" \
-  --max-jump 1.0 --vmax "$VMAX" --amax "$AMAX" 2>&1)
+  --seed "0 0.8 0.4 0 0.6 0" \
+  --target 0.269901 0.190108 0.475476 -0.234811 0.912635 0.182157 0.280679 \
+  --max-jump 3.0 --max-norm 6 --vmax "$VMAX" --amax "$AMAX" 2>&1)
 check "ok=true"                 "ok: true"            "$OUT"
 check "collision_checked=true"  "collision_checked: true" "$OUT"
-check "碰撞对数 = 15"           "collision_pairs: 15" "$OUT"
-check "有模型指纹"              "hulls=7"             "$OUT"
+check "碰撞对数 = 30"           "collision_pairs: 30" "$OUT"
+check "有模型指纹"              "hulls=10"            "$OUT"
 
+# ② 的目标 TCP 在 z=−0.127（桌面以下），必须被拒
 echo "── ② 穿桌面目标（TCP z=−0.127）必须被拒 ──"
 TGT="0.171803 0.098105 -0.127249 0.810132 -0.580701 0.019931 -0.077940"
 OUT=$("$CLI" --urdf "$URDF" --seed "0 2.5 0.4 0 0.6 0" --target "$TGT" \

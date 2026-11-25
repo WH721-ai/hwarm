@@ -96,7 +96,52 @@ bool CollisionModel::build(const RobotModel& model, const std::string& urdf_path
     return false;
   }
 
-  // ── ② 每个 mesh → 凸包 ──
+  // ── ② 每个连杆一个凸包（**按连杆去重**）──
+  //
+  // ⚠️ 为什么必须去重（2026-11-26）：
+  //   夹爪的 URDF 每个连杆有多个 collision 图元（gr_baselink 5 个、gr_link1/2 各 9 个），
+  //   Pinocchio 会给**每个图元**建一个 geometryObject → 30 个几何体。
+  //   而 findHull 是按**连杆名**查的，这 30 个查到的其实是 10 个不同的凸包。
+  //   不去重的后果：
+  //     · 碰撞对从 15 涨到 **130**，checkSelfCollision 从 9.6 µs 涨到 ~100 µs
+  //     · 同一个连杆的几个图元反复做同一份 GJK，纯浪费
+  //   去重后：10 个几何体（base + link1..6 + gr_baselink + gr_baselink 的两根爪）
+  //
+  //   凸包本身是"该连杆所有碰撞体角点的凸包"（见 tools/gen_collision_hulls.py），
+  //   所以用一份凸包代表整根连杆是**保守且正确**的。
+  {
+    std::vector<pinocchio::GeometryObject> unique;
+    std::vector<std::pair<std::string, int>> seen;   // link 名 → 已是第几个
+    unique.reserve(geom_.geometryObjects.size());
+    for (auto& obj : geom_.geometryObjects) {
+      const std::string base = stripSuffix(obj.name);
+      bool dup = false;
+      for (const auto& sv : seen) {
+        if (sv.first == base) { dup = true; break; }
+      }
+      if (dup) continue;
+      seen.emplace_back(base, static_cast<int>(unique.size()));
+      unique.push_back(obj);
+    }
+    if (unique.size() != geom_.geometryObjects.size()) {
+      std::cout << "[collision_model] 几何体去重 "
+                << geom_.geometryObjects.size() << " → " << unique.size()
+                << "（每个连杆只留一个凸包）\n";
+    }
+    geom_.geometryObjects = unique;
+    // ⚠️ 必须同步 ngeoms：addAllCollisionPairs() 循环用的是
+    //    `for (i = 0; i < ngeoms; ++i)`，不是 geometryObjects.size()。
+    //    只改 vector 不改 ngeoms，它仍按旧的 30 个生成 pair → 下标越界
+    //    → 构造 GeometryData 时 coal::ComputeCollision 段错误（2026-11-26 踩过）。
+    geom_.ngeoms = static_cast<pinocchio::GeomIndex>(unique.size());
+    // ⚠️ 必须清空 collisionPairs！
+    //    pinocchio 的 buildGeom(..., COLLISION, ...) **内部已经调用过
+    //    addAllCollisionPairs()**，pair 里存的是旧 30 个几何体的下标。
+    //    缩短 geometryObjects 之后这些下标就越界了，
+    //    构造 GeometryData 时 coal::ComputeCollision 直接段错误。
+    geom_.collisionPairs.clear();
+  }
+
   geo_link_names_.reserve(geom_.geometryObjects.size());
   for (auto& obj : geom_.geometryObjects) {
     const std::string base = stripSuffix(obj.name);
@@ -150,6 +195,22 @@ bool CollisionModel::build(const RobotModel& model, const std::string& urdf_path
   }
   pair_is_ee_.assign(pair_names_.size(), false);
 
+  // 构造 GeometryData 前的自检：几何体指针必须有效、pair 下标必须在范围内
+  for (size_t i = 0; i < geom_.geometryObjects.size(); ++i) {
+    if (!geom_.geometryObjects[i].geometry) {
+      std::cerr << "[collision_model] 几何体 " << i << " (" << geom_.geometryObjects[i].name
+                << ") 的 geometry 指针为空\n";
+      return false;
+    }
+  }
+  for (const auto& cp : geom_.collisionPairs) {
+    if (cp.first >= geom_.geometryObjects.size() ||
+        cp.second >= geom_.geometryObjects.size()) {
+      std::cerr << "[collision_model] 碰撞对下标越界: (" << cp.first << ", " << cp.second
+                << ") / 几何体 " << geom_.geometryObjects.size() << " 个\n";
+      return false;
+    }
+  }
   data_ = std::make_unique<pinocchio::GeometryData>(geom_);
   model_data_ = std::make_unique<pinocchio::Data>(model.pin());
   model_ = &model.pin();

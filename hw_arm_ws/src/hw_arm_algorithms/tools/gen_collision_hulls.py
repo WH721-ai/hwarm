@@ -45,6 +45,60 @@ def read_binary_stl(path: str) -> np.ndarray:
     return verts.reshape(-1, 3).astype(np.float64)
 
 
+
+# ══════════════════════════════════════════════════════════════════════
+# 夹爪（gr_*）的凸包：从 config/tool/assemb7_gripper.yaml 的**碰撞图元**生成
+# ══════════════════════════════════════════════════════════════════════
+# 为什么单独一条路：
+#   · 夹爪的 mesh 文件不在（VMshare 里只有 urdf/xacro），没法像手臂那样读 STL
+#   · 但夹爪的碰撞几何本来就是**基本体**（22 个 box + 2 个 cylinder），
+#     凸包 = 这些基本体角点的凸包，可以解析算出来
+#   · 基本体比 mesh 更适合做凸包：没有三角面朝向问题（C07）
+def generate_gripper_hulls(tool_yaml: str) -> list:
+    import yaml as _yaml
+    with open(tool_yaml) as f:
+        d = _yaml.safe_load(f)
+
+    per_link = {}
+    for b in d["collision_boxes"]:
+        lo = np.array(b["lo"], dtype=float)
+        hi = np.array(b["hi"], dtype=float)
+        ctr = (lo + hi) / 2
+        half = (hi - lo) / 2
+        verts = []
+        if b.get("shape") == "cylinder":
+            # 圆柱用 16 边棱柱近似（半径取 half 的 x 分量，轴沿 z）
+            r = float(half[0])
+            n = 16
+            for k in range(n):
+                a = 2 * np.pi * k / n
+                for z in (ctr[2] - half[2], ctr[2] + half[2]):
+                    verts.append([ctr[0] + r * np.cos(a), ctr[1] + r * np.sin(a), z])
+        else:
+            for sx in (-1, 1):
+                for sy in (-1, 1):
+                    for sz in (-1, 1):
+                        verts.append([ctr[0] + sx * half[0],
+                                      ctr[1] + sy * half[1],
+                                      ctr[2] + sz * half[2]])
+        per_link.setdefault(b["link"], []).extend(verts)
+
+    name_map = {"tool_baselink": "gr_baselink",
+                "tool_link1": "gr_link1",
+                "tool_link2": "gr_link2"}
+    out = []
+    for raw, verts in per_link.items():
+        name = name_map.get(raw, "gr_" + raw)
+        pts_all = np.array(verts, dtype=float)
+        hull = ConvexHull(pts_all)
+        pts = pts_all[hull.vertices]
+        remap = {int(o): i for i, o in enumerate(hull.vertices)}
+        tris = np.array([[remap[int(a)], remap[int(b)], remap[int(c)]]
+                         for a, b, c in hull.simplices])
+        out.append((name, pts, tris))
+    return out
+
+
 def emit(links, out_path: str) -> None:
     lines = []
     lines.append("// ⚠️ 自动生成，请勿手改")
@@ -104,6 +158,8 @@ def main() -> int:
     ap.add_argument("--mesh-dir", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--scale", type=float, default=0.001, help="STL 单位 → m")
+    ap.add_argument("--tool-yaml", default=None,
+                    help="夹爪工具配置（给了就同时生成 gr_* 的凸包）")
     args = ap.parse_args()
 
     links = []
@@ -125,6 +181,13 @@ def main() -> int:
         total_v += len(pts)
         total_t += len(tris)
         print(f"  {name:10s} 三角面 {len(v)//3:6d} → 凸包 {len(pts):4d} 顶点 / {len(tris):4d} 三角形")
+
+    # 夹爪（可选）：从碰撞图元生成
+    if args.tool_yaml and os.path.isfile(args.tool_yaml):
+        g = generate_gripper_hulls(args.tool_yaml)
+        for name, pts, tris in g:
+            print(f"  {name:12s} 由碰撞图元生成 → 凸包 {len(pts):4d} 顶点 / {len(tris):4d} 三角形")
+            links.append((name, pts, tris))
 
     emit(links, args.out)
     print(f"\n  ✅ 写入 {args.out}")

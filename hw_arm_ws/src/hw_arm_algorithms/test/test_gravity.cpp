@@ -62,7 +62,13 @@ TEST_F(GravityTest, MatchesPythonBaselineAtZero) {
   // base_link 的 +z 现在是重力方向，机械臂正立向上。
   // 历史上：未翻转时 g[1]=-2.2450；OpenArm 结构 g[1]=4.4900。
   // 2026-11-19 真机逐件称重后（总质量 2.661 → 2.7403 kg）重新计算
-  const std::vector<double> expected = {0.0, 2.28541, 2.82136, 0.01553, 0.20244, 0.0};
+  // 2026-11-26 夹爪正式进 URDF（gr_* fixed，0.3185 kg）后重算：
+  //   joint2 2.2854 → 1.9557、joint3 2.8214 → 4.0208（夹爪的质心在偏航轴外侧）
+  //   joint4/5/6 从 ~0 变成 −0.0012 / 0.5882 / −0.0258
+  //   独立核对：Pinocchio Python 对同一 URDF 算得
+  //   [-0, 1.955674, 4.020838, -0.001225, 0.588200, -0.025800]
+  const std::vector<double> expected = {0.0,         1.955674, 4.020838,
+                                        -0.001225,  0.588200, -0.025800};
   for (int i = 0; i < nv_; ++i) {
     EXPECT_NEAR(g[i], expected[static_cast<size_t>(i)], 1e-3)
         << "joint" << (i + 1) << " 重力矩与基线不符";

@@ -72,10 +72,13 @@ TEST_F(ModelTest, JointOrder) {
 }
 
 // ④ 总质量应与 CAD 一致（防 URDF 被改坏）
-//    新结构：computeTotalMass = 2.7513 kg（不含固定的 base_link 1.372 kg）
+//    当前：computeTotalMass = 3.0589 kg
+//          = link1..6 的 2.7404（link6 已降到 0.1 g）
+//          + 夹爪 gr_* 的 0.3185（fixed 关节，合并进 joint6）
+//          不含固定在世界的 base_link 1.372 kg
 //    旧结构曾是 4.268755
 TEST_F(ModelTest, TotalMass) {
-  EXPECT_NEAR(model_.totalMass(), 2.7513, 0.01);
+  EXPECT_NEAR(model_.totalMass(), 3.0589, 0.01);
 }
 
 // ⑤ 每个连杆惯性必须物理合理

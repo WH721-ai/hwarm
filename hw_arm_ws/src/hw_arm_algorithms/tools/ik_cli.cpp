@@ -137,9 +137,34 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> std::string { return (i + 1 < argc) ? argv[++i] : ""; };
+  // 收集紧随其后的纯数字参数（允许负号），拼成空格分隔的字符串。
+  // 两种写法都支持：
+  //   ① 一个带引号的字符串：--target "0.2 0.1 0.3 1 0 0 0"
+  //   ② 后面跟若干个独立参数：--target 0.2 0.1 0.3 1 0 0 0
+  // ② 是必须支持的：目标坐标/四元数常有负值，而 "-0.23" 会被当成选项名。
+  auto collectNumbers = [&](int& k, int n, char** v) -> std::string {
+    if (k + 1 >= n) return "";
+    auto isNum = [](const std::string& t) {
+      if (t.empty()) return false;
+      char* e = nullptr;
+      std::strtod(t.c_str(), &e);
+      return e != t.c_str() && e != nullptr && *e == '\0';
+    };
+    std::string out = v[++k];
+    // 第一个参数本身就是一串数（带引号的写法）就到此为止，
+    // 否则继续吃后面每一个纯数字参数。
+    if (isNum(out)) {
+      while (k + 1 < n && isNum(v[k + 1])) out += std::string(" ") + v[++k];
+    }
+    return out;
+  };
+    // --seed / --target 支持两种写法：
+    //   ① 一个带引号的字符串：--target "0.2 0.1 0.3 1 0 0 0"
+    //   ② 后面跟若干个独立参数：--target 0.2 0.1 0.3 1 0 0 0
+    // ②是必须的：目标坐标/四元数常有负值，而 "-0.23" 会被当成选项名。
     if (a == "--urdf") urdf = next();
-    else if (a == "--seed") seed_s = next();
-    else if (a == "--target") target_s = next();
+    else if (a == "--seed") seed_s = collectNumbers(i, argc, argv);
+    else if (a == "--target") target_s = collectNumbers(i, argc, argv);
     else if (a == "--frame") frame_name = next();
     else if (a == "--tol") { double v; if (!parseNumber(next(), v)) { std::fprintf(stderr, "--tol 不是合法数字\n"); return 2; } tol = v; }
     else if (a == "--max-iter") max_iter = std::atoi(next().c_str());

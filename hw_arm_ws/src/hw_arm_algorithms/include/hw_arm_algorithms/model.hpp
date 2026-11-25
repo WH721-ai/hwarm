@@ -29,14 +29,20 @@ struct LoadOptions {
   /// 总质量期望值（kg）。设为 0 表示不检查。
   ///
   /// 注意 Pinocchio 的 computeTotalMass **不含固定在世界的根连杆**，
-  /// 所以 base_link（1.372 kg）不计入。新结构（CAD 导入）：
-  ///   base_link 1.372（固定） + link1..6 = 2.7513 kg（可动）
-  /// 2026-11-19：按真机逐件称重更新（link1 97 g / link2 1428.5 g /
-  /// link3 497.5 g / link4 357.1 g / link5 360.2 g；link6 末端法兰保持 CAD 的 11 g，
-  /// 因为称重报的是 0 g —— 质量 0 会让惯量张量全 0，不物理也过不了正定性校验），
-  /// 旧值是 CAD 手工填的 2.661 kg。
-  /// 旧结构是 4.268755（当时 base_link 没有质量）。
-  double expected_total_mass = 2.751300;
+  /// 所以 base_link（1.372 kg）不计入。当前结构：
+  ///   link1..6 = 2.7404 kg（可动，link6 已降到 0.1 g）
+  ///   + 夹爪 gr_* = 0.3185 kg（fixed 关节，被合并进 joint6）
+  ///   = **3.0589 kg**
+  ///
+  /// 更新记录：
+  ///   2026-11-19  真机逐件称重：link1 97 g / link2 1428.5 g / link3 497.5 g /
+  ///               link4 357.1 g / link5 360.2 g / link6 11 g → 2.7513 kg
+  ///   2026-11-26  ① link6 那 11 g 是 CAD 里一个"两个球"的装饰件，实物没有
+  ///                  → 降到 0.1 g（**不能设 0**：RobotModel 校验拒绝非正质量，
+  ///                  而且零惯量会让 M 矩阵第 6 维全零、cond(M)=inf）
+  ///               ② 夹爪正式进 URDF（gr_* fixed）→ +0.3185 kg
+  ///               得 2.7404 + 0.3185 = 3.0589 kg
+  double expected_total_mass = 3.058900;
   double mass_tolerance = 0.01;
   /// 末端帧名，留空表示不检查
   std::string ee_frame = "tool0";

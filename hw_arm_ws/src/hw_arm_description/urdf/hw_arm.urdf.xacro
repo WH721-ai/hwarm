@@ -28,7 +28,7 @@
   <xacro:arg name="use_gazebo" default="false" />
 
   <!-- 夹爪（装配体7 平行夹爪，实测 318.5 g）。默认关闭，不影响原有 ROS 接口 -->
-  <xacro:arg name="with_gripper" default="false" />
+  <xacro:arg name="with_gripper" default="true" />
   <xacro:arg name="gripper_xyz" default="0 0 0" />
   <!-- 夹爪 +z 是接近方向（指向指尖），与 tool0 的 +z 同向 ⇒ 默认 identity -->
   <xacro:arg name="gripper_rpy" default="0 0 0" />

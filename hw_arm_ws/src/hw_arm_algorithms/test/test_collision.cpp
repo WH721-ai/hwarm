@@ -27,11 +27,19 @@ class CollisionTest : public ::testing::Test {
  protected:
   void SetUp() override {
     model_ = std::make_unique<RobotModel>();
-    ASSERT_TRUE(model_->load(HW_ARM_DEFAULT_URDF));
+    ASSERT_TRUE(model_->load(HW_ARM_DEFAULT_URDF)) << explainLoad(*model_);
     ws_ = std::make_unique<RobotWorkspace>(*model_);
     cm_ = std::make_unique<CollisionModel>();
     ASSERT_TRUE(cm_->build(*model_, HW_ARM_DEFAULT_URDF))
         << "CollisionModel 构建失败（凸包数据缺失？）";
+  }
+
+  /// 把 load 失败的校验信息打出来（否则 ASSERT_TRUE 只说 false，没法排查）
+  static std::string explainLoad(const RobotModel& m) {
+    std::string out = "RobotModel 校验失败:";
+    for (const auto& e : m.validation().errors) out += "\n  ERROR: " + e;
+    for (const auto& w : m.validation().warnings) out += "\n  WARN:  " + w;
+    return out;
   }
 
   Eigen::VectorXd home() const {
@@ -64,8 +72,10 @@ class CollisionTest : public ::testing::Test {
 // ① 碰撞对数量：不能是 0（Pinocchio 不会自动生成），也不该是 21（含相邻）
 TEST_F(CollisionTest, PairCountAfterAdjacentRemoval) {
   EXPECT_GT(cm_->numPairs(), 0) << "没有碰撞对 → 任何'无碰撞'都是假的";
-  EXPECT_LT(cm_->numPairs(), 21) << "相邻连杆没被排除干净";
-  EXPECT_EQ(cm_->numPairs(), 15);
+  // 10 个几何体（base_link + link1..6 + gr_baselink + gr_link1 + gr_link2）
+  // 全部 C(10,2)=45 对，减掉相邻/同连杆的 15 对 → 30 对。
+  // 2026-11-26 夹爪进 URDF 后从 15 涨到 30（多了 gr_* 与手臂各连杆的组合）。
+  EXPECT_EQ(cm_->numPairs(), 30) << "相邻连杆被排除干净了吗？夹爪进模型后应为 30";
   EXPECT_EQ(cm_->nq(), 6);
   EXPECT_FALSE(cm_->fingerprint().empty());
 }

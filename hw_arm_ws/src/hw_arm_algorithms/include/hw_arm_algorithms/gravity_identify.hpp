@@ -44,6 +44,15 @@ struct GravityIdOptions {
   /// 留出验证：每隔 holdout_stride 个样本留一个不参与拟合
   /// 0 = 不验证
   int holdout_stride = 0;
+
+  /// 是否同时辨识每轴恒定力矩偏置
+  ///
+  /// 为什么需要（2026-11-25 实测）：
+  ///   joint1（竖直偏航轴）按模型重力矩应恒为 0，但实测 -0.83 N·m
+  ///   —— 来自线束拉扯 / 扭矩零点 / 底座不绝对水平。
+  ///   joint3 实测也比模型高 2.15 N·m。
+  ///   这些偏置与重力参数正交（一个随位形变、一个不变），可以一起解。
+  bool estimate_offsets = true;
 };
 
 struct GravityIdResult {
@@ -56,6 +65,8 @@ struct GravityIdResult {
   double rms = 0.0;               ///< 拟合残差 RMS（N·m）
   double max_abs = 0.0;           ///< 最大绝对残差（N·m）
   Eigen::VectorXd per_joint_rms;  ///< 每关节 RMS（nv）
+
+  Eigen::VectorXd offsets;        ///< nv 个恒定力矩偏置（estimate_offsets=false 时全 0）
 
   bool holdout_ok = false;
   double holdout_rms = 0.0;       ///< 留出集上的 RMS —— 这才是"泛化精度"

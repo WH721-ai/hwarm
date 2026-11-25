@@ -181,6 +181,8 @@ class Collector(Node):
         self.tau = None
         self.last_stamp = None
         self.n_msg = 0
+        self._last_n_msg = 0
+        self._stall_count = 0
 
         self.sub = self.create_subscription(JointState, "/joint_states", self.on_state, 50)
         self.pub = self.create_publisher(
@@ -217,7 +219,8 @@ class Collector(Node):
         m.data = [float(x) for x in q_cmd]
         self.pub.publish(m)
 
-    def move_to(self, q_goal: np.ndarray, duration: float) -> bool:
+    def move_to(self, q_goal: np.ndarray, duration: float) -> str:
+        """返回 "" = 成功；否则返回失败原因"""
         """按**墙钟时间**做五次多项式缓动（min-jerk）
 
         ══════ 为什么必须按时间而不是按步数 ══════
@@ -239,7 +242,7 @@ class Collector(Node):
               → 起停平滑
         """
         if self.q is None:
-            return False
+            return "没有关节状态"
 
         # 起点取**最新的实测位置**（先刷新，别用几秒前的缓存）
         self.refresh(0.15)
@@ -269,26 +272,34 @@ class Collector(Node):
                     self.get_logger().error(
                         f"❌ joint2 实测力矩 {self.tau[1]:.2f} N·m 超过中止阈值 "
                         f"{self.args.abort_j2_torque} —— 停止运动并保持")
-                    return False
-                if self.last_stamp is not None and \
-                        (time.monotonic() - self.last_stamp) > 1.0:
+                    return f"joint2 力矩 {self.tau[1]:.2f} N·m 超限"
+                # 用消息计数判断有没有真的断流（比看墙钟可靠：
+                # 紧循环里 spin_once 可能连续几轮都没赶上新消息）
+                if self.n_msg == self._last_n_msg:
+                    self._stall_count += 1
+                else:
+                    self._last_n_msg = self.n_msg
+                    self._stall_count = 0
+                if self._stall_count >= 2:      # 连续两次 0.5 s 都没新消息 = 1 s 断流
                     self.get_logger().error("❌ 运动中关节状态中断 —— 停止")
-                    return False
+                    return "关节状态中断"
 
             # 补齐到下一个周期（spin 只用来收消息，不用它计时）
             t_next = t_start + (n_sent) * period
             remain = t_next - time.monotonic()
-            if remain > 0:
-                rclpy.spin_once(self, timeout_sec=min(remain, period))
-            else:
-                rclpy.spin_once(self, timeout_sec=0.0)
+            # ⚠️ remain<=0 时不能 spin_once(0.0)：rclpy 在超时为 0 时
+            #    经常直接返回、**不派发回调**，于是 last_stamp 永远不更新，
+            #    下面的"关节状态中断"检查就会误报（2026-11-25 真机踩过）。
+            #    给一个不小于 1 ms 的窗口，保证每轮都有机会处理消息。
+            rclpy.spin_once(self, timeout_sec=max(1e-3, min(remain, period)) if remain > 0
+                            else 1e-3)
 
         real = time.monotonic() - t_start
         # 只在明显偏离设定时才打印，避免刷屏
         if abs(real - duration) > 0.15 * max(duration, 1e-3):
             self.get_logger().warn(
                 f"运动实际耗时 {real:.2f}s（设定 {duration:.2f}s）")
-        return True
+        return ""
 
     def wait_settle(self, vel_tol: float, need: int, timeout: float) -> tuple[bool, np.ndarray]:
         """等静止：|dq| 连续 need 个周期低于阈值"""
@@ -309,6 +320,31 @@ class Collector(Node):
             else:
                 ok_cnt = 0
         return False, self.q.copy() if self.q is not None else np.zeros(6)
+
+
+def save_samples(path: str, samples, urdf, aborted: bool, bidirectional: bool):
+    """写盘（每个位形都调用一次，避免崩在中途把已采的全丢了）
+
+    ⚠️ numpy 标量 pyyaml 的 safe_dump 认不出：
+       RepresenterError: cannot represent an object
+       —— safe_dump 按精确类型查注册表，np.float64 是 float 子类但不命中。
+       所以这里统一转成 Python 原生 float。
+    """
+    clean = [{k: ([float(y) for y in v] if isinstance(v, (list, tuple)) else v)
+              for k, v in smp.items()} for smp in samples]
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    try:
+        import yaml
+        with open(path, "w") as f:
+            yaml.safe_dump({"samples": clean,
+                            "meta": {"urdf": urdf, "n": len(clean),
+                                     "aborted": aborted,
+                                     "bidirectional": bidirectional}},
+                           f, allow_unicode=True, sort_keys=False)
+    except ImportError:
+        import json
+        with open(path, "w") as f:
+            json.dump({"samples": clean}, f)
 
 
 def ask(prompt: str, allow: str = "s q") -> str:
@@ -487,8 +523,9 @@ def main() -> int:
                       f"{(time.monotonic()-node.last_stamp):.1f} s 前" if node.last_stamp else "     从未收到")
                 aborted = True; break
 
-            if not node.move_to(q_goal, args.move_time * args.speed_scale):
-                print("  ❌ 运动被中止（力矩超限）")
+            why = node.move_to(q_goal, args.move_time * args.speed_scale)
+            if why:
+                print(f"  ❌ 运动被中止：{why}")
                 aborted = True; break
 
             # ── 掉电检测：运动后位置应接近目标 ──
@@ -519,7 +556,8 @@ def main() -> int:
                 print(f"  ❌ 实测 joint2 力矩 {node.tau[1]:.2f} 超限，停止收集")
                 aborted = True; break
 
-            samples.append({"q": list(qa), "tau": node.tau.copy().tolist(), "tag": "A"})
+            samples.append({"q": [float(x) for x in qa],
+                            "tau": [float(x) for x in node.tau], "tag": "A"})
             print(f"  A: τ = {np.round(node.tau, 3)}")
 
             if interactive:
@@ -538,10 +576,14 @@ def main() -> int:
                 act = ask("  ▶ Enter 执行反向接近（s 跳过 B / q 退出）: ")
                 if act == "quit": aborted = False; break
                 if act == "skip": continue
-            if not node.move_to(off, args.move_time * 0.6 * args.speed_scale):
+            why = node.move_to(off, args.move_time * 0.6 * args.speed_scale)
+            if why:
+                print(f"  ❌ 反向接近被打断：{why}")
                 aborted = True; break
             node.wait_settle(args.vel_tol, args.settle_count, args.settle_time)
-            if not node.move_to(q_goal, args.move_time * 0.6 * args.speed_scale):
+            why = node.move_to(q_goal, args.move_time * 0.6 * args.speed_scale)
+            if why:
+                print(f"  ❌ 回到目标被打断：{why}")
                 aborted = True; break
             ok, qb = node.wait_settle(args.vel_tol, args.settle_count, args.settle_time)
             if not ok:
@@ -550,28 +592,22 @@ def main() -> int:
             if abs(node.tau[1]) > args.abort_j2_torque:
                 print(f"  ❌ 实测 joint2 力矩 {node.tau[1]:.2f} 超限，停止收集")
                 aborted = True; break
-            samples.append({"q": list(qb), "tau": node.tau.copy().tolist(), "tag": "B"})
+            samples.append({"q": [float(x) for x in qb],
+                            "tau": [float(x) for x in node.tau], "tag": "B"})
             print(f"  B: τ = {np.round(node.tau, 3)}")
             fr = (np.array(samples[-2]["tau"]) - np.array(samples[-1]["tau"])) / 2.0
             print(f"  库仑摩擦估计 = {np.round(fr, 3)}")
+
+            # ★ 每个位形采完就落盘：中途崩溃/掉电也不会把已采的全丢掉
+            save_samples(args.out, samples, urdf, aborted=False,
+                         bidirectional=not args.no_bidirectional)
+            print(f"  （已保存 {len(samples)} 个样本 → {args.out}）")
 
         # ── 写文件 ──
         if not samples:
             print("\n❌ 没采到任何样本")
             return 1
-        os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-        try:
-            import yaml
-            with open(args.out, "w") as f:
-                yaml.safe_dump({"samples": samples,
-                                "meta": {"urdf": urdf, "n": len(samples),
-                                         "aborted": aborted,
-                                         "bidirectional": not args.no_bidirectional}},
-                               f, allow_unicode=True, sort_keys=False)
-        except ImportError:
-            import json
-            with open(args.out, "w") as f:
-                json.dump({"samples": samples}, f)
+        save_samples(args.out, samples, urdf, aborted, not args.no_bidirectional)
         tag = "（中途停止）" if aborted else ""
         print(f"\n✅ 采集 {len(samples)} 个样本 → {args.out} {tag}")
         print(f"   下一步：gravity_id_cli --urdf {urdf} --samples {args.out}")

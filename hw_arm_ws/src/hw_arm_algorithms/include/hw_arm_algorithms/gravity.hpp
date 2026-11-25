@@ -79,6 +79,16 @@ void computeGravityFromParams(const RobotModel& model, RobotWorkspace& ws,
                               const Eigen::VectorXd& theta,
                               Eigen::VectorXd& g_out);
 
+/// 用辨识参数 + 每轴恒定偏置算重力：g = Y(q)·θ + offset
+///
+/// offset 吸收线束拉扯、扭矩零点、底座不水平等**与位形无关**的力矩。
+/// 实测 joint1（竖直轴）理论重力矩恒为 0，但实测 −0.83 N·m，就靠这个吸收。
+void computeGravityFromParamsAndOffset(const RobotModel& model, RobotWorkspace& ws,
+                                       const Eigen::VectorXd& q,
+                                       const Eigen::VectorXd& theta,
+                                       const Eigen::VectorXd& offset,
+                                       Eigen::VectorXd& g_out);
+
 /// 回归矩阵的列数（= 10 × (njoints − 1)）
 int gravityParamCount(const RobotModel& model);
 

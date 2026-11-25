@@ -80,9 +80,35 @@ TEST_F(GravityIdTest, NoiselessFitIsExact) {
   auto samples = makeSamples(40, 0.0, 0.0);
   const auto r = identifyGravity(*model_, *ws_, samples);
   ASSERT_TRUE(r.ok) << r.message;
-  EXPECT_EQ(r.rank, 10) << "本臂重力回归矩阵的有效秩实测为 10";
+  // 默认 estimate_offsets=true：秩 = 10（重力有效秩）+ 6（每轴偏置）
+  EXPECT_EQ(r.rank, 16) << "重力 10 + 偏置 6";
   EXPECT_LT(r.rms, 1e-8) << "无噪声时应精确（实测 ~2e-10，受条件数限制）";
   EXPECT_LT(r.max_abs, 1e-9);
+}
+
+// 关掉偏置估计时，秩应回到 10
+TEST_F(GravityIdTest, RankIsTenWithoutOffsets) {
+  auto samples = makeSamples(40, 0.0, 0.0);
+  GravityIdOptions opt;
+  opt.estimate_offsets = false;
+  const auto r = identifyGravity(*model_, *ws_, samples, opt);
+  ASSERT_TRUE(r.ok) << r.message;
+  EXPECT_EQ(r.rank, 10) << "本臂重力回归矩阵的有效秩实测为 10";
+}
+
+// ★ 恒定力矩偏置能被单独辨识出来（joint1 竖直轴实测有 -0.83 N·m 这种）
+TEST_F(GravityIdTest, ConstantOffsetsAreIdentified) {
+  auto samples = makeSamples(40, 0.0, 0.0);
+  const Eigen::VectorXd bias =
+      (Eigen::VectorXd(6) << -0.83, 0.35, 2.15, 0.02, -0.19, -0.07).finished();
+  for (auto& s : samples) s.tau += bias;      // 叠加一个与位形无关的偏置
+
+  const auto r = identifyGravity(*model_, *ws_, samples);
+  ASSERT_TRUE(r.ok) << r.message;
+  ASSERT_EQ(r.offsets.size(), 6);
+  EXPECT_LT((r.offsets - bias).cwiseAbs().maxCoeff(), 1e-6)
+      << "偏置应被完整辨识，实际 " << r.offsets.transpose();
+  EXPECT_LT(r.rms, 1e-8) << "消除偏置后残差应回到机器精度";
 }
 
 // 有噪声：残差应接近噪声水平，且留出集也接近（不过拟合）

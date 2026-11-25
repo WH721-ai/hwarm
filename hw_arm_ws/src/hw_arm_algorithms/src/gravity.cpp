@@ -96,4 +96,13 @@ void computeGravityFromParams(const RobotModel& model, RobotWorkspace& ws,
   g_out.noalias() = Y * theta;
 }
 
+void computeGravityFromParamsAndOffset(const RobotModel& model, RobotWorkspace& ws,
+                                       const Eigen::VectorXd& q,
+                                       const Eigen::VectorXd& theta,
+                                       const Eigen::VectorXd& offset,
+                                       Eigen::VectorXd& g_out) {
+  computeGravityFromParams(model, ws, q, theta, g_out);
+  if (offset.size() == g_out.size()) g_out += offset;
+}
+
 }  // namespace hw_arm_algorithms

@@ -38,6 +38,18 @@ void stackSamples(const RobotModel& model, RobotWorkspace& ws,
   }
 }
 
+/// 在回归矩阵末尾追加"每轴恒定偏置"的单位块（N*nv × nv）
+Eigen::MatrixXd augmentWithOffsets(const Eigen::MatrixXd& A, int nv) {
+  const int n_row = static_cast<int>(A.rows());
+  const int np = static_cast<int>(A.cols());
+  Eigen::MatrixXd A2 = Eigen::MatrixXd::Zero(n_row, np + nv);
+  A2.leftCols(np) = A;
+  for (int k = 0; k < n_row / nv; ++k) {
+    A2.block(k * nv, np, nv, nv).setIdentity();
+  }
+  return A2;
+}
+
 }  // namespace
 
 Eigen::VectorXd evalGravityTheta(const RobotModel& model, RobotWorkspace& ws,
@@ -98,6 +110,11 @@ GravityIdResult identifyGravity(const RobotModel& model, RobotWorkspace& ws,
   Eigen::VectorXd b;
   stackSamples(model, ws, samples, fit_idx, A, b);
 
+  // 把"每轴恒定偏置"并进回归矩阵：重力项随位形变、偏置项不变，两者正交。
+  // A 变成 N*nv x (np + nv)，末尾追加 6 个单位块。
+  const int np_add = opt.estimate_offsets ? nv : 0;
+  if (np_add > 0) A = augmentWithOffsets(A, nv);
+
   Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeThinV);
   const auto& S = svd.singularValues();
   if (S.size() == 0 || !(S[0] > 0.0)) {
@@ -121,10 +138,19 @@ GravityIdResult identifyGravity(const RobotModel& model, RobotWorkspace& ws,
   const Eigen::MatrixXd AB = A * B;                 // (nv*N) × rank
   const Eigen::VectorXd x =
       AB.colPivHouseholderQr().solve(b);            // rank 很小，QR 足够
-  out.theta = B * x;                                // np
+  const Eigen::VectorXd x_full = B * x;
+  out.theta = x_full.head(np);
+  if (np_add > 0) {
+    out.offsets = x_full.tail(nv);
+  } else {
+    out.offsets = Eigen::VectorXd::Zero(nv);
+  }
 
   // ── 拟合残差 ──
-  const Eigen::VectorXd r = A * out.theta - b;
+  Eigen::VectorXd x_hat(A.cols());
+  x_hat.head(np) = out.theta;
+  if (np_add > 0) x_hat.tail(nv) = out.offsets;
+  const Eigen::VectorXd r = A * x_hat - b;
   const int n = static_cast<int>(fit_idx.size());
   out.per_joint_rms = Eigen::VectorXd::Zero(nv);
   double ss = 0.0, mx = 0.0;
@@ -147,7 +173,14 @@ GravityIdResult identifyGravity(const RobotModel& model, RobotWorkspace& ws,
     Eigen::MatrixXd Ah;
     Eigen::VectorXd bh;
     stackSamples(model, ws, samples, hold_idx, Ah, bh);
-    const Eigen::VectorXd rh = Ah * out.theta - bh;
+    // ★ 留出集必须和拟合集同样追加偏置列 ——
+    //    否则 Ah.cols() 还是 60，xh.tail(nv) 会写进最后 6 个重力参数里，
+    //    算出来的 holdout 残差完全是错的（实测会报 0.96 N·m 这种假数字）。
+    if (np_add > 0) Ah = augmentWithOffsets(Ah, nv);
+    Eigen::VectorXd xh(Ah.cols());
+    xh.head(np) = out.theta;
+    if (np_add > 0) xh.tail(nv) = out.offsets;
+    const Eigen::VectorXd rh = Ah * xh - bh;
     out.holdout_rms = rh.norm() / std::sqrt(static_cast<double>(rh.size()));
     out.holdout_max = rh.cwiseAbs().maxCoeff();
     out.holdout_ok = true;

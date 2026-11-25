@@ -131,6 +131,10 @@ int main(int argc, char** argv) {
   if (r.ok) {
     std::printf("rms: %.6f\n", r.rms);
     std::printf("max_abs: %.6f\n", r.max_abs);
+    std::printf("offsets: [");
+    for (Eigen::Index j = 0; j < r.offsets.size(); ++j)
+      std::printf("%s%.4f", j ? ", " : "", r.offsets[j]);
+    std::printf("]\n");
     std::printf("per_joint_rms: [");
     for (Eigen::Index j = 0; j < r.per_joint_rms.size(); ++j)
       std::printf("%s%.4f", j ? ", " : "", r.per_joint_rms[j]);
@@ -158,6 +162,8 @@ int main(int argc, char** argv) {
     meta["holdout_rms"] = r.holdout_ok ? r.holdout_rms : -1.0;
     meta["param_layout"] = "per body 10: [m, m*cx, m*cy, m*cz, Ixx, Ixy, Iyy, Ixz, Iyz, Izz]";
     root["meta"] = meta;
+    root["offsets"] = std::vector<double>(r.offsets.data(),
+                                          r.offsets.data() + r.offsets.size());
     YAML::Emitter em;
     em << root;
     std::FILE* f = std::fopen(out_path.c_str(), "w");

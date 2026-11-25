@@ -54,4 +54,32 @@ void computeGravityMotor(const RobotModel& model, RobotWorkspace& ws,
 double verifyGravityConsistency(const RobotModel& model, RobotWorkspace& ws,
                                 const Eigen::VectorXd& q);
 
+/// 重力回归矩阵：g(q) = Y_g(q) · θ
+///
+/// θ 的排列与 Pinocchio 的 DynamicParameters 一致：
+///   每个 body 10 个参数 [m, m·cx, m·cy, m·cz, Ixx, Ixy, Iyy, Ixz, Iyz, Izz]
+///   全部 body 拼起来长度 = 10 × (njoints − 1)
+///
+/// ⚠️ 对本臂：60 列里只有 24 列（每 body 前 4 个）非零，
+///    这 24 列的**有效秩是 10**（实测），所以只有 10 个独立组合可辨识。
+///    但 g(q) 落在秩 10 的子空间里 ⇒ 参数辨识仍能**精确**复现重力矩。
+///
+/// @param Y_out  输出 nv × (10*(njoints-1))，必须预先 resize
+void computeGravityRegressor(const RobotModel& model, RobotWorkspace& ws,
+                             const Eigen::VectorXd& q, Eigen::MatrixXd& Y_out);
+
+/// 用辨识出来的参数算重力：g = Y_g(q)·θ
+///
+/// 与 computeGravity（用 URDF 里的标称惯性参数）的区别：
+///   computeGravity            → g = Y·θ_nominal
+///   computeGravityFromParams  → g = Y·θ_identified
+/// 后者是 C-05 静态重力辨识的产物，能吸收夹爪质量、线束、装配偏差。
+void computeGravityFromParams(const RobotModel& model, RobotWorkspace& ws,
+                              const Eigen::VectorXd& q,
+                              const Eigen::VectorXd& theta,
+                              Eigen::VectorXd& g_out);
+
+/// 回归矩阵的列数（= 10 × (njoints − 1)）
+int gravityParamCount(const RobotModel& model);
+
 }  // namespace hw_arm_algorithms

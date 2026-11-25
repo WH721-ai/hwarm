@@ -28,6 +28,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(pinocchio REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # ─────────────────────────────────────────────────────────────
 # 库
@@ -42,6 +43,7 @@ add_library(${PROJECT_NAME}
   src/collision_model.cpp       # 碰撞几何模型（凸包，建一次）
   src/collision_robot.cpp       # 自碰撞检测
   src/collision_world.cpp       # 桌面约束
+  src/gravity_identify.cpp      # C-05 静态重力辨识（最小二乘 + 可辨识子空间）
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -96,6 +98,9 @@ add_executable(plan_line_cli tools/plan_line_cli.cpp)
 target_link_libraries(plan_line_cli ${PROJECT_NAME})
 
 # 命令行：目标位姿 → IK 解（笛卡尔"点到点"用，只封装 kinematics.cpp）
+add_executable(gravity_id_cli tools/gravity_id_cli.cpp)
+target_link_libraries(gravity_id_cli ${PROJECT_NAME} yaml-cpp)
+
 add_executable(ik_cli tools/ik_cli.cpp)
 target_link_libraries(ik_cli ${PROJECT_NAME})
 
@@ -160,6 +165,13 @@ if(BUILD_TESTING)
   target_compile_definitions(test_ik_selection PRIVATE
     HW_ARM_DEFAULT_URDF="${HW_ARM_TEST_URDF}")
 
+
+
+  # C-05 静态重力辨识
+  ament_add_gtest(test_gravity_identify test/test_gravity_identify.cpp)
+  target_link_libraries(test_gravity_identify ${PROJECT_NAME})
+  target_compile_definitions(test_gravity_identify PRIVATE
+    HW_ARM_DEFAULT_URDF="${HW_ARM_TEST_URDF}")
 
   # ik_cli 碰撞检查集成测试（审查报告 C01）：只跑算法 CLI，不接机器人
   add_test(NAME test_ik_cli_collision

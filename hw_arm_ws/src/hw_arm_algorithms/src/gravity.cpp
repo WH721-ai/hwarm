@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #include <pinocchio/algorithm/rnea.hpp>
+#include <pinocchio/algorithm/regressor.hpp>
 
 
 namespace hw_arm_algorithms {
@@ -65,6 +66,34 @@ double verifyGravityConsistency(const RobotModel& model, RobotWorkspace& ws,
   const Eigen::VectorXd g_cgg = ws.pin().g;
 
   return (g_rnea - g_cgg).cwiseAbs().maxCoeff();
+}
+
+int gravityParamCount(const RobotModel& model) {
+  return 10 * (static_cast<int>(model.pin().njoints) - 1);
+}
+
+void computeGravityRegressor(const RobotModel& model, RobotWorkspace& ws,
+                             const Eigen::VectorXd& q, Eigen::MatrixXd& Y_out) {
+  const int nv = static_cast<int>(model.nv());
+  const int np = gravityParamCount(model);
+  Y_out.resize(nv, np);
+  // 零速零加速度：此时 "关节力矩回归矩阵" 就等于重力回归矩阵
+  Eigen::VectorXd v0 = Eigen::VectorXd::Zero(nv);
+  Eigen::VectorXd a0 = Eigen::VectorXd::Zero(nv);
+  Y_out = pinocchio::computeJointTorqueRegressor(model.pin(), ws.pin(), q, v0, a0);
+}
+
+void computeGravityFromParams(const RobotModel& model, RobotWorkspace& ws,
+                              const Eigen::VectorXd& q,
+                              const Eigen::VectorXd& theta,
+                              Eigen::VectorXd& g_out) {
+  Eigen::MatrixXd Y;
+  computeGravityRegressor(model, ws, q, Y);
+  if (theta.size() != Y.cols()) {
+    g_out = Eigen::VectorXd::Zero(model.nv());
+    return;
+  }
+  g_out.noalias() = Y * theta;
 }
 
 }  // namespace hw_arm_algorithms

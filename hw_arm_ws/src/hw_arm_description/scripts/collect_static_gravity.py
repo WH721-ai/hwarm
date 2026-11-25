@@ -198,6 +198,12 @@ class Collector(Node):
         self.last_stamp = time.monotonic()
         self.n_msg += 1
 
+    def refresh(self, seconds: float = 0.3):
+        """主动 spin 一小段，刷新缓存（交互阻塞后必须调用）"""
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < seconds:
+            rclpy.spin_once(self, timeout_sec=0.03)
+
     def wait_state(self, timeout=5.0) -> bool:
         t0 = time.monotonic()
         while time.monotonic() - t0 < timeout:
@@ -278,7 +284,9 @@ def main() -> int:
     ap.add_argument("--vel-tol", type=float, default=0.01, help="静止速度阈值 rad/s")
     ap.add_argument("--settle-count", type=int, default=10)
     ap.add_argument("--max-j2-torque", type=float, default=8.0,
-                    help="预判超过它的位形直接跳过（N·m）")
+                    help="joint2 预判超过它的位形直接跳过（N·m）")
+    ap.add_argument("--max-torque-frac", type=float, default=0.6,
+                    help="其余轴的上限 = 连续额定 × 该比例（默认 0.6）")
     ap.add_argument("--abort-j2-torque", type=float, default=9.5,
                     help="实测超过它立即中止（N·m）")
     ap.add_argument("--gripper-mass", type=float, default=0.3185,
@@ -307,13 +315,30 @@ def main() -> int:
         except Exception:
             urdf = None
 
+    # 各轴力矩上限：joint2 用 --max-j2-torque（默认 6），
+    # 其余轴用连续额定的一定比例。
+    # ⚠️ 只看 joint2 不够：有的位形 joint3 才是最重的
+    #    （实测某位形 joint2 只有 −0.26，joint3 却到 4.05）。
+    FRAC = args.max_torque_frac
+    t_lim = np.array([T_RATED[0] * FRAC, args.max_j2_torque, T_RATED[2] * FRAC,
+                      T_RATED[3] * FRAC, T_RATED[4] * FRAC, T_RATED[5] * FRAC])
+
+    def check_tau(g):
+        """返回 (ok, 超限的轴号 或 -1, 该轴预判值)"""
+        if g is None:
+            return True, -1, float("nan")
+        over = np.where(np.abs(g) > t_lim)[0]
+        if over.size == 0:
+            return True, -1, abs(g[1])
+        j = int(over[np.argmax(np.abs(g[over]) / t_lim[over])])
+        return False, j, abs(g[j])
+
     safe, skipped = [], []
     rows = []
     for i, q in enumerate(poses):
         g = nominal_gravity(q, urdf, args.gripper_mass) if urdf else None
-        j2_tau = abs(g[1]) if g is not None else float("nan")
-        ok = (g is None) or (j2_tau <= args.max_j2_torque)
-        rows.append((q, j2_tau, ok))
+        ok, over_j, val = check_tau(g)
+        rows.append((q, abs(g[1]) if g is not None else float("nan"), ok, over_j, val))
         (safe if ok else skipped).append(q)
 
     # 先截取，再打印 —— 否则表格里会出现"✅ 但其实被 --keep 丢掉的"位形
@@ -326,16 +351,17 @@ def main() -> int:
 
     print(f"\n{'#':>3}  {'j2':>7} {'j3':>7} {'j4':>7} {'j5':>7} {'j6':>7}   "
           f"{'τ_j2 预判':>10}  结论")
-    for i, (q, j2_tau, ok) in enumerate(rows):
+    for i, (q, j2_tau, ok, over_j, val) in enumerate(rows):
         if not ok:
             mark = "⏭️ 跳过（超力矩）"
         elif id(q) in keep_ids:
             mark = "✅ 采用"
         else:
             mark = "➖ 合格但未选（--keep）"
+        extra = "" if ok else f"（joint{over_j+1} 预判 {val:.2f} > 限 {t_lim[over_j]:.1f}）"
         print(f"{i:3d}  {math.degrees(q[1]):7.1f} {math.degrees(q[2]):7.1f} "
               f"{math.degrees(q[3]):7.1f} {math.degrees(q[4]):7.1f} {math.degrees(q[5]):7.1f}   "
-              f"{j2_tau:10.2f}  {mark}")
+              f"{j2_tau:10.2f}  {mark}{extra}")
 
     print(f"\n规划 {len(poses)} 个候选：合格 {len(rows)-len(skipped)} 个，"
           f"超力矩 {len(skipped)} 个，**最终采用 {len(safe)} 个**")
@@ -392,8 +418,17 @@ def main() -> int:
                     print("  跳过"); continue
 
             # ── 运动前检查：控制器是否还活着 ──
-            if node.q is None or (time.monotonic() - (node.last_stamp or 0)) > 1.0:
+            #
+            # ⚠️ 必须先 spin 几次再判新鲜度。
+            #    交互模式下 ask() 阻塞在 input()，期间没有任何 spin_once，
+            #    last_stamp 不会更新 —— 用户只要考虑超过 1 秒，
+            #    这里就会误报"关节状态中断"。2026-11-25 真机踩过一次。
+            node.refresh(0.5)
+            if node.q is None or node.last_stamp is None or \
+                    (time.monotonic() - node.last_stamp) > 1.0:
                 print("  ❌ 关节状态中断（控制器可能被 deactivate）—— 停止采集")
+                print(f"     最后收到状态: "
+                      f"{(time.monotonic()-node.last_stamp):.1f} s 前" if node.last_stamp else "     从未收到")
                 aborted = True; break
 
             if not node.move_to(q_goal, args.move_time):

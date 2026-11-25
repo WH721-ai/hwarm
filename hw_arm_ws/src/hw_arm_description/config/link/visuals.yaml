@@ -122,23 +122,3 @@ link5:
       g: 0.32
       b: 0.42
       a: 1.0
-link6:
-  - origin:
-      x: -0.015790705
-      y: 0.23158136
-      z: -0.21135942
-      roll: -1.7505844
-      pitch: -1.0610974
-      yaw: 0.0
-    geometry:
-      type: mesh
-      filename: meshes/link6.stl
-      scale:
-        x: 0.001
-        y: 0.001
-        z: 0.001
-    color:
-      r: 0.45
-      g: 0.45
-      b: 0.45
-      a: 1.0

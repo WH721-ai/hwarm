@@ -224,12 +224,14 @@ class Collector(Node):
         self.n_msg = 0
         self._last_n_msg = 0
         self._stall_count = 0
+        self.last_names = None
 
         self.sub = self.create_subscription(JointState, "/joint_states", self.on_state, 50)
         self.pub = self.create_publisher(
             Float64MultiArray, "/hw_arm_forward_position_controller/commands", 10)
 
     def on_state(self, msg: JointState):
+        self.last_names = list(msg.name)      # 诊断用：收到的关节名
         idx = {n: i for i, n in enumerate(msg.name)}
         if not all(j in idx for j in JOINTS):
             return
@@ -247,12 +249,45 @@ class Collector(Node):
         while time.monotonic() - t0 < seconds:
             rclpy.spin_once(self, timeout_sec=0.03)
 
-    def wait_state(self, timeout=5.0) -> bool:
+    def wait_state(self, timeout=20.0) -> bool:
+        """等第一条有效的 /joint_states
+
+        失败时把**诊断信息**打出来，而不是只丢一句"收不到"：
+          · 话题上有几个发布者（0 = bringup 没起；≥1 = 起了但关节名对不上）
+          · 收到的关节名列表（对不上时能一眼看出是 name 变了还是少了）
+        2026-11-26：用户跑的时候报了"收不到 /joint_states"，
+        实际是两个 ros2_control_node 同时抢 CAN，控制器全挂 —— 只报"收不到"
+        排查起来毫无线索。
+        """
         t0 = time.monotonic()
+        seen_names = None
+        last_print = 0.0
         while time.monotonic() - t0 < timeout:
             rclpy.spin_once(self, timeout_sec=0.05)
             if self.q is not None and (time.monotonic() - self.last_stamp) < 0.3:
                 return True
+            # 每 3 秒打一次进展
+            if time.monotonic() - last_print > 3.0:
+                last_print = time.monotonic()
+                npub = self.count_publishers("/joint_states")
+                print(f"  等待 /joint_states … {time.monotonic()-t0:4.1f}s  "
+                      f"发布者 {npub} 个"
+                      + (f"，收到过关节名 {seen_names}" if seen_names else ""))
+        # 失败诊断
+        npub = self.count_publishers("/joint_states")
+        print(f"\n❌ {timeout:.0f} 秒内没收到可用的 /joint_states")
+        print(f"   发布者数量: {npub}")
+        if npub == 0:
+            print("   → 没有任何节点在发 JointState：bringup 没启动，或已崩溃")
+            print("   查: ros2 control list_controllers")
+            print("       ps -eo pid,args | grep ros2_control_node")
+        else:
+            print(f"   收到的关节名: {seen_names}")
+            print(f"   需要的关节名: {JOINTS}")
+            print("   → 有发布者但名字对不上：检查 joint_state_broadcaster 的 joints 参数，"
+                  "或发布者是别的（比如 RViz 的 joint_state_publisher）")
+        if seen_names is not None:
+            print("   → 也可能是 joint_state_broadcaster 被 deactivate 了（看 bringup 日志有没有报错）")
         return False
 
     def send(self, q_cmd: np.ndarray):

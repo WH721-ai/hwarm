@@ -112,14 +112,37 @@ def query(s: socket.socket, motor_id: int, rid: int, deadline_ms: int = 400):
 
 
 def write_param(s: socket.socket, motor_id: int, rid: int, value: int,
-                tries: int = 5) -> bool:
-    """写一个 uint32 寄存器；返回是否收到"写入的数据"回显"""
+                tries: int = 4) -> bool:
+    """写一个 uint32 寄存器，**用回读验证**而不是靠回显
+
+    ⚠️ 实测（DM-H3510）：写参数的成功回显**经常收不到**（发出去的帧有效、
+       但回复帧丢了），可寄存器其实已经改了。
+       如果只看回显判断，会误判成"写入失败" —— 我第一次改 ESC_ID 就是这样，
+       工具报"没有回显，中止"，但电机已经跑到 ID 7 去了，状态不一致。
+       所以这里写完一律**回读寄存器比对**。
+    """
     payload = bytes([motor_id & 0xFF, (motor_id >> 8) & 0xFF, 0x55, rid]) + \
         struct.pack("<I", value & 0xFFFFFFFF)
+
     for _ in range(tries):
         send(s, payload)
+        time.sleep(0.05)                     # 给电机时间处理
+        got, _raw = query_target(s, motor_id, rid, value)
+        if got:
+            return True
+        # 回读没对上，再来一次
+    return False
+
+
+def query_target(s: socket.socket, motor_id: int, rid: int, expect: int,
+                 deadline_ms: int = 300) -> tuple[bool, int | None]:
+    """回读某寄存器并与 expect 比对（只对 uint32 寄存器有效）"""
+    deadline = time.time() + deadline_ms / 1000.0
+    payload = bytes([motor_id & 0xFF, (motor_id >> 8) & 0xFF, 0x33, rid, 0, 0, 0, 0])
+    while time.time() < deadline:
+        send(s, payload)
         t0 = time.time()
-        while time.time() - t0 < 0.05:
+        while time.time() - t0 < 0.03:
             try:
                 raw = s.recv(16)
             except socket.timeout:
@@ -128,17 +151,23 @@ def write_param(s: socket.socket, motor_id: int, rid: int, value: int,
             if cid == BROADCAST_ID or cid < 0x10:
                 continue
             data = raw[8:8 + dlc]
-            if len(data) < 8 or data[2] != 0x55 or data[3] != rid:
+            if len(data) < 8 or data[2] != 0x33 or data[3] != rid:
                 continue
             if (data[0] & 0x0F) != (motor_id & 0x0F):
                 continue
-            got = struct.unpack("<I", bytes(data[4:8]))[0]
-            return got == (value & 0xFFFFFFFF)
-    return False
+            b = data[4:8]
+            val = b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)
+            return (val == (expect & 0xFFFFFFFF)), val
+        time.sleep(0.01)
+    return False, None
 
 
-def store_params(s: socket.socket, motor_id: int, tries: int = 5) -> bool:
-    """存储参数到 flash（4 字节帧，最长 30 ms）"""
+def store_params(s: socket.socket, motor_id: int, tries: int = 2) -> bool:
+    """存储参数到 flash（4 字节帧，最长 30 ms）
+
+    ⚠️ 说明书：flash 擦写次数约 1 万次，**不要频繁发送存储指令**。
+       所以这里只重试 2 次，不要调大。
+    """
     payload = bytes([motor_id & 0xFF, (motor_id >> 8) & 0xFF, 0xAA, 0x01])
     for _ in range(tries):
         send(s, payload)
@@ -262,11 +291,12 @@ def main() -> int:
     # ── ① 写 ESC_ID（此时电机还在 old_id 上监听）──
     print(f"\n  ① 写 ESC_ID = {args.new_id}（发到 ID {args.old_id}）")
     if not write_param(s, args.old_id, RID_ESC_ID, args.new_id):
-        print("     ❌ 写入没有回显，中止（电机可能不支持或总线丢帧）")
-        print("        重试一次：再跑本命令")
+        print("     ❌ 回读校验没过，中止")
+        print(f"        请先体检：python3 set_motor_id.py --old-id {args.old_id}")
+        print(f"                   python3 set_motor_id.py --old-id {args.new_id}")
         s.close()
         return 1
-    print("     ✅ 写入成功，电机现在监听 ID", args.new_id)
+    print("     ✅ 回读确认：ESC_ID =", args.new_id)
     time.sleep(0.05)
     drain(s, 0.05)
 
@@ -274,13 +304,13 @@ def main() -> int:
     if not args.skip_master:
         print(f"  ② 写 MST_ID = 0x{new_master:X}（发到新 ID {args.new_id}）")
         if not write_param(s, args.new_id, RID_MST_ID, new_master):
-            print("     ❌ 写入没有回显")
+            print("     ❌ 回读校验没过")
             print(f"        电机现在在 ID {args.new_id} 上，可重试：")
             print(f"        python3 set_motor_id.py --old-id {args.new_id} "
                   f"--new-id {args.new_id} --new-master 0x{new_master:X} --confirm")
             s.close()
             return 1
-        print("     ✅ 写入成功")
+        print(f"     ✅ 回读确认：MST_ID = 0x{new_master:X}")
         time.sleep(0.05)
         drain(s, 0.05)
 

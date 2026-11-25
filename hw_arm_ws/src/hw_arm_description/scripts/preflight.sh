@@ -85,7 +85,20 @@ case "$N_NODE" in
   *) bad "$N_NODE 个！多个节点会抢同一块 CAN —— 先全部 kill 再重启" ;;
 esac
 N_RSP=$(count_rsp); N_RSP=${N_RSP:-0}
-[ "$N_RSP" -le 1 ] && ok "robot_state_publisher ${N_RSP} 个" || bad "robot_state_publisher ${N_RSP} 个（重复启动）"
+# ⚠️ 残留的 robot_state_publisher 是**致命**的：
+#    它们一直往 /robot_description 发**旧的** URDF，
+#    而 ros2_control_node 只取**第一条**收到的描述。
+#    结果：参数时而生效、时而不生效（重力补偿一时开一时关），
+#    日志里看不出任何错误。2026-11-26 被这个坑了两个小时。
+if [ "$N_RSP" -eq 0 ]; then
+  ok "没有残留的 robot_state_publisher"
+elif [ "$N_RSP" -eq 1 ]; then
+  ok "robot_state_publisher 1 个"
+else
+  bad "robot_state_publisher ${N_RSP} 个！残留的会发旧 URDF 覆盖参数 —— 必须先 kill 掉"
+fi
+N_LAUNCH=$(count_launch); N_LAUNCH=${N_LAUNCH:-0}
+[ "$N_LAUNCH" -le 1 ] || bad "ros2 launch 有 ${N_LAUNCH} 个（重复启动）"
 
 echo "════ ④ 控制器 ════"
 if [ "$N_NODE" -ge 1 ]; then

@@ -346,6 +346,42 @@ bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
   }
   if (!get("urdf_file").empty()) urdf_file_ = get("urdf_file");
 
+  // ── 拖动示教 / 重力补偿的安全参数（C-05 之后新增）
+  if (!get("gravity_params_path").empty()) gravity_params_path_ = get("gravity_params_path");
+  if (!get("gravity_ramp_time").empty()) {
+    double v = 3.0;
+    if (!parse_double("gravity_ramp_time", get("gravity_ramp_time"), v)) return false;
+    if (v < 0.0 || v > 30.0) {
+      RCLCPP_ERROR(logger(), "gravity_ramp_time=%.2f 超出 [0, 30] s", v);
+      return false;
+    }
+    gravity_ramp_time_ = v;
+  }
+  if (!get("tau_limit").empty()) {
+    std::vector<double> v;
+    for (const auto& tok : split_ws(get("tau_limit"))) {
+      double d = 0.0;
+      if (!parse_double("tau_limit", tok, d)) return false;
+      v.push_back(d);
+    }
+    if (v.size() != ARM_DOF) {
+      RCLCPP_ERROR(logger(), "tau_limit 需要 %zu 个数，实际 %zu", ARM_DOF, v.size());
+      return false;
+    }
+    for (double x : v)
+      if (x <= 0.0) { RCLCPP_ERROR(logger(), "tau_limit 必须为正"); return false; }
+    tau_limit_.assign(v.begin(), v.end());
+  }
+  if (!get("zero_gravity_vel_limit").empty()) {
+    double v = 2.0;
+    if (!parse_double("zero_gravity_vel_limit", get("zero_gravity_vel_limit"), v)) return false;
+    if (v <= 0.0 || v > 20.0) {
+      RCLCPP_ERROR(logger(), "zero_gravity_vel_limit=%.2f 超出 (0, 20]", v);
+      return false;
+    }
+    zero_gravity_vel_limit_ = v;
+  }
+
   if (zero_gravity_) {
     RCLCPP_INFO(logger(), "模式: **零重力拖动示教**（kp=0, kd=%.2f）", zero_gravity_kd_);
   }
@@ -373,6 +409,34 @@ bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
 
     ws_ = std::make_unique<hw_arm_algorithms::RobotWorkspace>(*model_);
     gravity_tau_.assign(ARM_DOF, 0.0);
+
+      // ── 加载辨识出的重力参数（C-05）
+      //   给了 gravity_params_path 就必须读成功，否则直接返回 false ——
+      //   不能静默退回标称 CAD 参数（残差 0.88 N·m 是辨识后 0.18 的 5 倍），
+      //   否则使用者以为自己加载了辨识结果，其实用的是 CAD 参数。
+      if (!gravity_params_path_.empty()) {
+        std::string err;
+        if (!hw_arm_algorithms::loadGravityParams(gravity_params_path_, gparams_, &err)) {
+          RCLCPP_ERROR(logger(), "读不到重力参数 %s：%s",
+                       gravity_params_path_.c_str(), err.c_str());
+          return false;
+        }
+        if (gparams_.theta.size() != static_cast<size_t>(model_->nv()) * 10) {
+          RCLCPP_ERROR(logger(), "重力参数维度不符：theta=%zu，期望 %d",
+                       gparams_.theta.size(), model_->nv() * 10);
+          return false;
+        }
+        RCLCPP_INFO(logger(),
+                    "重力参数: %s\\n  rank=%d  rms=%.4f  holdout=%.4f  偏移 %zu / 摩擦 %zu",
+                    gravity_params_path_.c_str(), gparams_.rank, gparams_.rms,
+                    gparams_.holdout_rms, gparams_.offsets.size(),
+                    gparams_.friction.size());
+      } else {
+        RCLCPP_WARN(logger(),
+                    "未指定 gravity_params_path —— 重力前馈用 URDF 标称惯性参数");
+      }
+      if (gravity_ramp_time_ > 0.0)
+        RCLCPP_INFO(logger(), "重力斜坡: %.1f s", gravity_ramp_time_);
 
     RCLCPP_INFO(logger(),
                 "重力补偿: 开（scale=%.2f, dry_run=%s）URDF=%s 总质量=%.4f kg",

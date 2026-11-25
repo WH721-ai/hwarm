@@ -105,4 +105,16 @@ void computeGravityFromParamsAndOffset(const RobotModel& model, RobotWorkspace& 
   if (offset.size() == g_out.size()) g_out += offset;
 }
 
+Eigen::VectorXd gravityParamPrior(const RobotModel& model) {
+  const int np = gravityParamCount(model);
+  Eigen::VectorXd theta = Eigen::VectorXd::Zero(np);
+  const auto& pin_model = model.pin();
+  const int nb = np / 10;
+  for (int i = 0; i < nb; ++i) {
+    const auto params = pin_model.inertias[static_cast<size_t>(i + 1)].toDynamicParameters();
+    for (int k = 0; k < 10; ++k) theta[i * 10 + k] = params[k];
+  }
+  return theta;
+}
+
 }  // namespace hw_arm_algorithms

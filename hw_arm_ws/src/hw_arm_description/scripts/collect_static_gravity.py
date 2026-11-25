@@ -377,6 +377,40 @@ class Collector(Node):
                 f"运动实际耗时 {real:.2f}s（设定 {duration:.2f}s）")
         return ""
 
+    def dither_and_mean(self, q_center: np.ndarray, amp: float, n: int,
+                        duration: float, vel_tol: float) -> tuple[np.ndarray, np.ndarray]:
+        """在目标位形附近做几次小幅往复，取力矩平均
+
+        ══════ 为什么必须抖 ══════
+        实测（2026-11-26，40 个样本里 15 对近位形）：位形只差 1-2°，
+        实测力矩却差到 **2.34 N·m**，而重力模型只该差 0.03-0.2 N·m。
+        也就是说 joint3 有约 **±1.2 N·m 的静摩擦死区** ——
+        机械臂停在哪里取决于它"卡"在死区的哪一侧，跟重力无关。
+
+        这个误差**任何参数辨识都消不掉**：它在同一个位形上就能变 2.4 N·m，
+        比模型误差大一个量级。上一版残差 0.48 N·m 的地板就是它。
+
+        抖动的原理：让机械臂在死区里来回碾几次，静摩擦的方向随机化，
+        取多次力矩的**平均**就能把对称的死区抵消掉。
+
+        返回 (平均后的 q, 平均后的 τ)
+        """
+        qs = []
+        taus = []
+        for k in range(n):
+            sgn = 1.0 if (k % 2 == 0) else -1.0
+            q_off = q_center.copy()
+            q_off[1] += sgn * amp          # j2 抖
+            q_off[2] -= sgn * amp * 1.5    # j3 抖得多一点（它的死区最大）
+            if not self.move_to(q_off, duration):
+                continue
+            self.wait_settle(vel_tol, 6, 3.0)
+            qs.append(self.q.copy())
+            taus.append(self.tau.copy())
+        if not qs:
+            return q_center, self.tau.copy() if self.tau is not None else np.zeros(6)
+        return np.mean(qs, axis=0), np.mean(taus, axis=0)
+
     def wait_settle(self, vel_tol: float, need: int, timeout: float) -> tuple[bool, np.ndarray]:
         """等静止：|dq| 连续 need 个周期低于阈值"""
         t0 = time.monotonic()
@@ -448,6 +482,12 @@ def main() -> int:
                     help="每段运动时间 s（默认 4.0；原来是 2.0 = 速度减半）")
     ap.add_argument("--speed-scale", type=float, default=1.0,
                     help="再乘一个倍数：>1 更慢，<1 更快")
+    ap.add_argument("--dither", type=int, default=3,
+                    help="每个位形做几次小幅往复再取力矩平均（0=不抖）。"
+                         "joint3 静摩擦死区约 ±1.2 N·m，不抖的话辨识残差的地板就在 0.5 左右")
+    ap.add_argument("--dither-amp", type=float, default=0.010,
+                    help="抖动幅度 rad（默认 0.010 ≈ 0.57°）")
+    ap.add_argument("--dither-time", type=float, default=1.2, help="每次抖动运动时长 s")
     ap.add_argument("--settle-time", type=float, default=4.0, help="等待静止上限 s")
     # ⚠️ 阈值必须**高于电机速度反馈的量化台阶**，否则永远等不到"静止"：
     #    12 位速度字段 / VMAX：joint2 (40 rad/s) → 台阶 0.0195 rad/s
@@ -711,9 +751,15 @@ def main() -> int:
                 print(f"  ❌ 实测 joint2 力矩 {node.tau[1]:.2f} 超限，停止收集")
                 aborted = True; break
 
-            samples.append({"q": [float(x) for x in qa],
-                            "tau": [float(x) for x in node.tau], "tag": "A"})
-            print(f"  A: τ = {np.round(node.tau, 3)}")
+            qa_mean, tau_a = qa, node.tau.copy()
+            if args.dither > 0:
+                print(f"  抖动 {args.dither} 次（±{math.degrees(args.dither_amp):.2f}°）…")
+                qa_mean, tau_a = node.dither_and_mean(
+                    qa, args.dither_amp, args.dither, args.dither_time, args.vel_tol)
+                print(f"  抖后 τ = {np.round(tau_a, 3)}")
+            samples.append({"q": [float(x) for x in qa_mean],
+                            "tau": [float(x) for x in tau_a], "tag": "A"})
+            print(f"  A: τ = {np.round(tau_a, 3)}")
 
             if interactive:
                 act = ask("  ▶ Enter 记录 A 并继续；s 丢弃这一条：")
@@ -747,9 +793,14 @@ def main() -> int:
             if abs(node.tau[1]) > args.abort_j2_torque:
                 print(f"  ❌ 实测 joint2 力矩 {node.tau[1]:.2f} 超限，停止收集")
                 aborted = True; break
-            samples.append({"q": [float(x) for x in qb],
-                            "tau": [float(x) for x in node.tau], "tag": "B"})
-            print(f"  B: τ = {np.round(node.tau, 3)}")
+            qb_mean, tau_b = qb, node.tau.copy()
+            if args.dither > 0:
+                qb_mean, tau_b = node.dither_and_mean(
+                    qb, args.dither_amp, args.dither, args.dither_time, args.vel_tol)
+                print(f"  抖后 τ = {np.round(tau_b, 3)}")
+            samples.append({"q": [float(x) for x in qb_mean],
+                            "tau": [float(x) for x in tau_b], "tag": "B"})
+            print(f"  B: τ = {np.round(tau_b, 3)}")
             fr = (np.array(samples[-2]["tau"]) - np.array(samples[-1]["tau"])) / 2.0
             print(f"  库仑摩擦估计 = {np.round(fr, 3)}")
 

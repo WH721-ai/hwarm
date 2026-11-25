@@ -53,6 +53,39 @@ struct GravityIdOptions {
   ///   joint3 实测也比模型高 2.15 N·m。
   ///   这些偏置与重力参数正交（一个随位形变、一个不变），可以一起解。
   bool estimate_offsets = true;
+
+  /// 是否同时辨识**每轴库仑摩擦**（靠 A/B 双向接近的符号差）
+  ///
+  /// 原理：机械臂停在"静摩擦刚好平衡"的位置，停下的点取决于接近方向。
+  ///   A 组：直接走到目标（接近方向 d）
+  ///   B 组：先偏移 δ 再回到目标（接近方向 −d）
+  /// 所以两组测到的力矩差 = 2×库仑摩擦：
+  ///   τ_A = g(q_A) + o + f_c,   τ_B = g(q_B) + o − f_c
+  /// 在回归矩阵里给每轴加一列 sign_k·1（A 取 +1、B 取 −1），
+  /// 与重力参数正交，可一起解。
+  ///
+  /// 为什么必须做（2026-11-26 实测）：
+  ///   只解重力+偏置时 rms=0.489、holdout=0.600，超过 0.5 门槛；
+  ///   joint3 的 A/B 力矩差折算库仑摩擦 **0.83 N·m**，远大于模型误差。
+  bool estimate_friction = true;
+
+  /// 正则化：把解往 URDF 的标称参数拉（Tikhonov / ridge）
+  ///
+  /// 为什么必须做（2026-11-26 实测）：
+  ///   40 个样本、20 个唯一位形，设计矩阵的有效秩只有 17，
+  ///   奇异值从 137 一路掉到 **0.4**（σ16/σ1 = 3e-3）。
+  ///   纯最小二乘在这些"几乎没被激励"的方向上会放大噪声：
+  ///     rms 0.475（训练集还行）  但 holdout **0.635**（泛化差）
+  ///   加正则后，辨识不出来的方向自动退回标称值，
+  ///   保证结果不会比"直接用 URDF"更差。
+  ///
+  /// lambda 的量纲要和 A^T A 匹配：A 的元素是力矩/参数，
+  /// 取 lambda = (ridge_ratio · σ_max)^2 比较直观，默认 ridge_ratio = 1e-2。
+  /// 默认**关**：纯最小二乘，语义是"把数据里的信息全部用上"，
+  /// 也便于单元测试验证"无噪声时能精确还原偏置"。
+  /// 真机数据上用 CLI 的 --ridge 打开做对比。
+  bool regularize = false;
+  double ridge_ratio = 1e-2;
 };
 
 struct GravityIdResult {
@@ -67,6 +100,8 @@ struct GravityIdResult {
   Eigen::VectorXd per_joint_rms;  ///< 每关节 RMS（nv）
 
   Eigen::VectorXd offsets;        ///< nv 个恒定力矩偏置（estimate_offsets=false 时全 0）
+  Eigen::VectorXd friction;       ///< nv 个库仑摩擦幅值（estimate_friction=false 时全 0）
+  double ridge_lambda = 0.0;      ///< 实际用的 λ（排查用）
 
   bool holdout_ok = false;
   double holdout_rms = 0.0;       ///< 留出集上的 RMS —— 这才是"泛化精度"

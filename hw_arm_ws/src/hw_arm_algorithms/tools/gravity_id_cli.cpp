@@ -82,6 +82,8 @@ int main(int argc, char** argv) {
   double rank_tol = 1e-6;
   int min_n = 20;
   double accept_rms = 0.5;
+  double ridge = 0.0;        // >0 时打开 Tikhonov 正则（往 URDF 标称参数拉）
+  bool ridge_set = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -89,6 +91,7 @@ int main(int argc, char** argv) {
     if (a == "--urdf") urdf = next();
     else if (a == "--samples") samples_path = next();
     else if (a == "--out") out_path = next();
+    else if (a == "--ridge") { ridge = std::atof(next().c_str()); ridge_set = true; }
     else if (a == "--holdout") holdout = std::atoi(next().c_str());
     else if (a == "--rank-tol") rank_tol = std::atof(next().c_str());
     else if (a == "--min-n") min_n = std::atoi(next().c_str());
@@ -120,6 +123,10 @@ int main(int argc, char** argv) {
   hw_arm_algorithms::GravityIdOptions opt;
   opt.rank_tol = rank_tol;
   opt.holdout_stride = holdout;
+  if (ridge_set) {
+    opt.regularize = true;      // 往 URDF 标称参数拉，改善留出误差
+    opt.ridge_ratio = ridge;
+  }
 
   const auto r = hw_arm_algorithms::identifyGravity(model, ws, samples, opt);
 
@@ -131,6 +138,10 @@ int main(int argc, char** argv) {
   if (r.ok) {
     std::printf("rms: %.6f\n", r.rms);
     std::printf("max_abs: %.6f\n", r.max_abs);
+    std::printf("friction: [");
+    for (Eigen::Index j = 0; j < r.friction.size(); ++j)
+      std::printf("%s%.4f", j ? ", " : "", r.friction[j]);
+    std::printf("]\n");
     std::printf("offsets: [");
     for (Eigen::Index j = 0; j < r.offsets.size(); ++j)
       std::printf("%s%.4f", j ? ", " : "", r.offsets[j]);
@@ -162,6 +173,8 @@ int main(int argc, char** argv) {
     meta["holdout_rms"] = r.holdout_ok ? r.holdout_rms : -1.0;
     meta["param_layout"] = "per body 10: [m, m*cx, m*cy, m*cz, Ixx, Ixy, Iyy, Ixz, Iyz, Izz]";
     root["meta"] = meta;
+    root["friction"] = std::vector<double>(r.friction.data(),
+                                           r.friction.data() + r.friction.size());
     root["offsets"] = std::vector<double>(r.offsets.data(),
                                           r.offsets.data() + r.offsets.size());
     YAML::Emitter em;

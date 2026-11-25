@@ -89,6 +89,13 @@ void computeGravityFromParamsAndOffset(const RobotModel& model, RobotWorkspace& 
                                        const Eigen::VectorXd& offset,
                                        Eigen::VectorXd& g_out);
 
+/// 把 URDF 的标称惯性参数摊成 θ 向量（布局与回归矩阵一致）
+///
+/// 布局：每个连杆 10 个 [m, m·cx, m·cy, m·cz, Ixx, Ixy, Iyy, Ixz, Iyz, Izz]
+/// 用途：作为正则化先验 —— 数据里辨识不出来的方向就退回标称值，
+///       保证结果**不会比标称更差**。
+Eigen::VectorXd gravityParamPrior(const RobotModel& model);
+
 /// 回归矩阵的列数（= 10 × (njoints − 1)）
 int gravityParamCount(const RobotModel& model);
 

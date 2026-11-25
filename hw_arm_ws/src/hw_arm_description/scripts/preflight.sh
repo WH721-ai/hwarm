@@ -16,8 +16,7 @@
 #    所以下面的变量一律用 ${VAR:-} 形式。
 HERE="$(cd "$(dirname "$0")" && pwd)"
 set +u
-source /opt/ros/jazzy/setup.bash 2>/dev/null || true
-[ -f "$HOME/hw_arm/hw_arm_ws/install/setup.bash" ] && source "$HOME/hw_arm/hw_arm_ws/install/setup.bash"
+source "$(dirname "$0")/env.sh"
 
 QUICK=0
 [ "${1:-}" = "--quick" ] && QUICK=1
@@ -46,7 +45,27 @@ else
 fi
 
 echo "════ ② 电机是否上电 ════"
-if [ "$QUICK" -eq 0 ] && ip -br link show can0 2>/dev/null | grep -q "UP"; then
+# ⚠️ bringup 在跑的时候**不能**用 raw CAN 去扫电机：
+#    ros2_control 已经占着 can0 在 250 Hz 收发，扫描进程的查询会被淹没，
+#    结果表现为"0/6 在线"，但电机其实是好的（joint_states 一直在更新）。
+#    所以分两种情况：
+#      没节点 → raw CAN 扫描（能直接判断电机有没有电）
+#      有节点 → 看 /joint_states 的 effort 是否非零、position 是否非全 0
+N_NODE_EARLY=$(count_node); N_NODE_EARLY=${N_NODE_EARLY:-0}
+if [ "$N_NODE_EARLY" -ge 1 ]; then
+  JS=$(timeout 10 ros2 topic echo --once /joint_states 2>/dev/null || true)
+  if [ -z "$JS" ]; then
+    bad "收不到 /joint_states，无法判断电机（bringup 在跑但没数据）"
+  else
+    EFF=$(printf '%s' "$JS" | sed -n '/^effort:/,/^---/p' | grep -c '^- ' || true)
+    NONZERO=$(printf '%s' "$JS" | sed -n '/^effort:/,/^---/p' | grep -E '^- (0\.0+|-0\.0+)$' -c || true)
+    if [ "${EFF:-0}" -ge 6 ] && [ "${NONZERO:-6}" -lt 6 ]; then
+      ok "effort 有 ${EFF} 个值且不全为 0（电机在出力）"
+    else
+      bad "effort 全为 0 或数量不足 —— 电机可能失能/没电"
+    fi
+  fi
+elif [ "$QUICK" -eq 0 ] && ip -br link show can0 2>/dev/null | grep -q "UP"; then
   SCAN=$(timeout 40 python3 "$HERE/scan_motors.py" --ids 1,2,3,4,5,6 2>&1 || true)
   N_ON=$(printf '%s\n' "$SCAN" | grep -c "✅ ID" || true)
   if [ "${N_ON:-0}" -ge 6 ]; then

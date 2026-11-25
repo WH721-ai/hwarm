@@ -369,7 +369,10 @@ class Collector(Node):
                 else:
                     self._last_n_msg = self.n_msg
                     self._stall_count = 0
-                if self._stall_count >= 2:      # 连续两次 0.5 s 都没新消息 = 1 s 断流
+                # ⚠️ 阈值放到 3 秒（连续 6 次 0.5 s 都没新消息）。
+                # 这台 VM 上 Fast DDS 走 ens33 组播时会间歇性丢 5~10 秒，
+                # 而控制器一直是 active —— 1 秒就判死的做法实测误报多次。
+                if self._stall_count >= 6:      # = 3 s 真断流
                     self.get_logger().error("❌ 运动中关节状态中断 —— 停止")
                     return "关节状态中断"
 
@@ -744,9 +747,9 @@ def main() -> int:
             #    交互模式下 ask() 阻塞在 input()，期间没有任何 spin_once，
             #    last_stamp 不会更新 —— 用户只要考虑超过 1 秒，
             #    这里就会误报"关节状态中断"。2026-11-25 真机踩过一次。
-            node.refresh(0.5)
+            node.refresh(1.0)
             if node.q is None or node.last_stamp is None or \
-                    (time.monotonic() - node.last_stamp) > 1.0:
+                    (time.monotonic() - node.last_stamp) > 5.0:
                 print("  ❌ 关节状态中断（控制器可能被 deactivate）—— 停止采集")
                 print(f"     最后收到状态: "
                       f"{(time.monotonic()-node.last_stamp):.1f} s 前" if node.last_stamp else "     从未收到")

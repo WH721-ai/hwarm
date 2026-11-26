@@ -167,6 +167,29 @@ class Verifier(Node):
                 ok = 0
         return False
 
+    def dither_and_mean(self, q_center, amp, n, duration):
+        """在位形附近小幅往复 n 次，取力矩平均
+
+        为什么必须抖（2026-11-26 首次现场验证的教训）：
+          不抖时整体 rms 0.600，但辨识时（抖过的）是 0.184。
+          差值 sqrt(0.55²+0.184²)=0.58 正好对上 —— 说明多出来的 0.55
+          全是**静摩擦死区**，不是模型误差。
+          同一个位形换个接近方向，joint2/joint3 的读数能差 1~2 N·m。
+        """
+        qs, taus = [], []
+        for k in range(n):
+            sgn = 1.0 if (k % 2 == 0) else -1.0
+            q_off = q_center.copy()
+            q_off[1] += sgn * amp
+            q_off[2] -= sgn * amp * 1.5
+            self.move_to(q_off, duration)
+            self.settle(need=6, timeout=3.0)
+            qs.append(self.q.copy())
+            taus.append(self.tau.copy())
+        if not qs:
+            return q_center, np.zeros(6)
+        return np.mean(qs, axis=0), np.mean(taus, axis=0)
+
     def average_tau(self, n=8):
         acc = []
         for _ in range(n):
@@ -186,6 +209,11 @@ def main():
     ap.add_argument("--poses", type=int, default=6, help="验证几个位形（默认 6）")
     ap.add_argument("--tol", type=float, default=0.4, help="每轴容差 N·m（默认 0.4）")
     ap.add_argument("--move-time", type=float, default=3.0, help="每段运动时长 s")
+    ap.add_argument("--dither", type=int, default=3,
+                    help="每个位形抖几次再取平均（默认 3，0=不抖）。"
+                         "不抖时静摩擦死区会贡献约 0.55 N·m 的假误差")
+    ap.add_argument("--dither-amp", type=float, default=0.010, help="抖动幅度 rad（默认 0.010≈0.57°）")
+    ap.add_argument("--dither-time", type=float, default=2.0, help="每次抖动运动时长 s")
     ap.add_argument("--dry-run", action="store_true", help="只打印位形，不动机械臂")
     ap.add_argument("--return-home", dest="return_home", action="store_true", default=True,
                     help="验证完回到起始位形（默认开）")
@@ -238,8 +266,12 @@ def main():
             if not node.settle():
                 print(f"  #{i+1} ⚠️ 没等到静止，跳过")
                 continue
-            q_meas = node.q.copy()
-            tau_meas = node.average_tau()
+            if args.dither > 0:
+                q_meas, tau_meas = node.dither_and_mean(
+                    node.q.copy(), args.dither_amp, args.dither, args.dither_time)
+            else:
+                q_meas = node.q.copy()
+                tau_meas = node.average_tau()
             g_pred = g_fn(q_meas)
             res = tau_meas - g_pred
             rows.append((i, q_meas, tau_meas, g_pred, res))

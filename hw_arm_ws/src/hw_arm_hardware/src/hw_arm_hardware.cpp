@@ -463,11 +463,27 @@ bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
     {
       Eigen::VectorXd q = Eigen::VectorXd::Zero(model_->nq());
       Eigen::VectorXd g(model_->nv());
+      // ⚠️ 这里打的是**标称 URDF**（CAD 惯性）的重力矩，不是 θ̂ 的。
+      //    2026-11-26 发现：日志只写 "g(q=0)=...（可用于核对期望值）"，
+      //    很容易被误读成"θ̂ 模型在零位的预测"。
+      //    q=0 处两者差很多（joint3：标称 4.02 vs θ̂ 6.09），
+      //    拿标称值去和实测比会得出完全错误的结论。
       hw_arm_algorithms::computeGravity(*model_, *ws_, q, g);
       RCLCPP_INFO(logger(),
-                  "  g(q=0) = [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f] N·m"
-                  "（可用于核对期望值）",
+                  "  g(q=0) 标称URDF = [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f] N·m",
                   g[0], g[1], g[2], g[3], g[4], g[5]);
+      if (gparams_.valid && gparams_.theta.size() == model_->nv() * 10) {
+        const Eigen::VectorXd off =
+            gparams_.offsets.size() == model_->nv() ? gparams_.offsets
+                                                    : Eigen::VectorXd::Zero(model_->nv());
+        Eigen::VectorXd gid(model_->nv());
+        hw_arm_algorithms::computeGravityFromParamsAndOffset(
+            *model_, *ws_, q, gparams_.theta, off, gid);
+        RCLCPP_INFO(logger(),
+                    "  g(q=0) θ̂模型    = [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f] N·m"
+                    "  ← 这才是实际下发的前馈基础",
+                    gid[0], gid[1], gid[2], gid[3], gid[4], gid[5]);
+      }
     }
   } else {
     RCLCPP_INFO(logger(), "重力补偿: 关（tau_ff 只来自控制器）");

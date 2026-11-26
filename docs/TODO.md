@@ -378,6 +378,59 @@ GraspNet 留作"堆叠/杂乱场景"的备用路径。
 - [ ] 若实测延迟 < 1 ms 且帧率 > 6000 fps，则把 `update_rate` 提到 250，并重测 overrun
 - [ ] 到那时再评估 `C-38 实时性` 的 1 kHz 目标
 
+### C-43a 本机能不能加 EtherCAT 主站（**C-43 的跟进，2026-11-26 实测环境检查**）
+
+**结论：技术上能装，但不适合在这台虚拟机上做硬实时控制。**
+
+**环境实测**
+
+| 项 | 实测值 | 对 EtherCAT 的影响 |
+|---|---|---|
+| 系统 | Ubuntu 24.04.5, kernel **7.0.0-43-generic** | ⚠️ **太新**，IgH 1.5.x 官方只到 5.x，需要打补丁 |
+| 抢占模式 | `PREEMPT_DYNAMIC`（可 `preempt=full` 启动） | ⚠️ 非 RT，抖动大 |
+| `CONFIG_HZ` | 1000 | ✅ 还可以 |
+| clocksource | tsc | ✅ |
+| 内核头文件 | `/lib/modules/7.0.0-43-generic/build` ✅ + `Module.symvers` ✅ + gcc 13.3 | ✅ 能编译内核模块 |
+| **网卡** | **Intel 82545EM (VMware 模拟), driver `e1000`, 1000 Mb/s** | ⚠️ **模拟网卡**，IgH 原生驱动不一定能用 |
+| 网卡数量 | 只有 `ens33`（NAT 用）+ docker0 + can0 | ❌ **没有专用网卡**，EtherCAT 必须独占一块 |
+| 虚拟化 | vmware, i7-14650HX, 8 核 | ⚠️ 虚机实时性天生差 |
+| Raw socket | **需要 sudo**（当前用户无 CAP_NET_RAW） | SOEM 需要 sudo 或 setcap |
+| apt 里的包 | `soem` / `libsoem-dev` / `ethercat` **都没有** | 要源码编译 |
+| RT 内核 | apt 有 `linux-image-realtime 6.8.1-1015.16`（universe） | 可装，但会换内核版本 |
+
+**两条路线的可行性**
+
+| 路线 | 需要 | 可行性 | 主要风险 |
+|---|---|---|---|
+| **SOEM**（用户态主站） | 源码编译 + raw socket(sudo) + 独占网卡 | ⚠️ **中等** | 虚机调度抖动 100 µs~几 ms，EtherCAT 周期抖动会很大 |
+| **IgH EtherCAT Master**（内核模块） | 编译内核模块 + 打补丁 + 原生网卡驱动 | ❌ **低** | ① 内核 7.0 太新 ② VMware 模拟的 82545EM 与 IgH e1000 驱动的 DMA 乒乓机制很可能不兼容 ③ `generic` 驱动性能差且不稳 |
+
+**⚠️ 关键障碍：没有专用网卡**
+
+```
+EtherCAT 主站必须**独占**一块网卡（不能用有 IP 协议栈的 ens33）
+        ↓
+需要在 VMware 里**再加一块虚拟网卡**，并在客户机里禁掉 IP
+        ↓
+而且这块网卡也是 VMware 模拟的 —— 帧能不能透传到真实 EtherCAT 从站，**必须实测**
+```
+
+**建议**
+
+1. **不要为了 LinkX 去上 EtherCAT**。LinkX 的 **ENET 模式（Cannelloni → SocketCAN）** 能保留 `can0` 接口，改动小得多，也不需要实时内核。
+2. **如果一定要 EtherCAT**：
+   - 换**物理机**（不要虚机）
+   - 加一块**真实网卡**（Intel i210/i219 是 IgH 原生驱动支持最好的）
+   - 装 `linux-image-realtime` 或自编译 PREEMPT_RT，启动参数加 `preempt=full`
+   - 用 SOEM 先做功能验证，性能不够再上 IgH
+3. **本机当前状态**：可以装 SOEM 做**功能验证/协议调试**（能跑通就算成功），但**不能作为正式控制主站**。
+
+**动作**
+- [ ] 若要走 EtherCAT：先在 VMware 加第二块虚拟网卡，测 raw socket 能否收发 EtherCAT 帧（ethertype 0x88A4）
+- [ ] SOEM 源码编译（`git clone https://github.com/OpenEtherCATsociety/SOEM`），用 `sudo setcap cap_net_raw+ep` 给二进制赋权
+- [ ] 实测周期抖动；若 > 1 ms 则本机不可用于正式控制
+- [ ] **优先级低于 C-43**：先确认 ENET 模式能替代 USB-CAN
+
 ### C-39 模型一致性校验
 - 运行时 `robot_description` 是 xacro 展开的，磁盘上还有构建产物
 - 改了 YAML 只编译 algorithms 时，URDF 可能是旧的

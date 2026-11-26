@@ -187,6 +187,10 @@ def main():
     ap.add_argument("--tol", type=float, default=0.4, help="每轴容差 N·m（默认 0.4）")
     ap.add_argument("--move-time", type=float, default=3.0, help="每段运动时长 s")
     ap.add_argument("--dry-run", action="store_true", help="只打印位形，不动机械臂")
+    ap.add_argument("--return-home", dest="return_home", action="store_true", default=True,
+                    help="验证完回到起始位形（默认开）")
+    ap.add_argument("--no-return-home", dest="return_home", action="store_false",
+                    help="验证完停在最后一个位形")
     args = ap.parse_args()
 
     if not args.urdf or not os.path.isfile(args.urdf):
@@ -222,7 +226,8 @@ def main():
             print("❌ 收不到 /joint_states —— 确认 bringup 已启动且控制器 active")
             return 1
 
-        print(f"\n当前 q = {np.round(node.q, 4)}")
+        q_start = node.q.copy()
+        print(f"\n起始 q = {np.round(q_start, 4)}")
         print("开始验证……\n")
         print(f"  {'#':>2} {'轴':>7}{'实测τ':>9}{'预测g':>9}{'残差':>9}   ")
         print("  " + "-" * 52)
@@ -243,6 +248,12 @@ def main():
                 print(f"  {i+1:>2} {'joint'+str(j+1):>7}{tau_meas[j]:9.3f}"
                       f"{g_pred[j]:9.3f}{res[j]:9.3f}{flag}")
             print()
+
+        if args.return_home:
+            print("\n回到起始位形……")
+            node.move_to(q_start, args.move_time * 1.5)
+            node.settle(timeout=5.0)
+            print(f"  已回到 {np.round(node.q, 4)}")
 
         if not rows:
             print("❌ 一个位形都没测成")

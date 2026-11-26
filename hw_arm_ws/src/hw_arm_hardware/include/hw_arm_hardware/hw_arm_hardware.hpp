@@ -170,6 +170,17 @@ class HwArmHW : public hardware_interface::SystemInterface {
   // 而机械臂可能已经在动 —— 前馈会越来越错，形成正反馈把手臂甩出去。
   // 2026-11-26 现场就是这么"往上飘拉不住"的，只能断电。
   bool state_stale_any_ = false;
+
+  // ── 故障锁存（2026-11-26 审阅意见）
+  // 原来 state_stale_any_ 是每周期重算的瞬时标志：硬总线故障那条路径直接
+  // return 没有置位；反馈一恢复标志自动变 false → 前馈自动重新施加。
+  // 故障必须锁存，恢复必须由人显式确认（重新调用服务）。
+  bool fault_latched_ = false;
+
+  // 已建立的过渡系数（0=无前馈/满刚度，1=满前馈/零刚度）。
+  // 不再每次从时间戳重算，而是按速率向目标逼近。
+  double tau_scale_ = 0.0;
+  double kp_scale_ = 1.0;
   std::vector<bool> axis_stale_latched_;   // 每轴一个，避免刷屏
 
 

@@ -747,6 +747,8 @@ CallbackReturn HwArmHW::on_activate(const rclcpp_lifecycle::State& /*prev*/) {
           }
           // 切换前把位置命令对齐到当前位形：退出时机械臂停在原地不会弹回去
           for (size_t j = 0; j < ARM_DOF; ++j) pos_commands_[j] = pos_states_[j];
+          // 人工显式操作 = 确认已排除故障，清除锁存
+          fault_latched_ = false;
           zero_gravity_srv_mode_ = req->data;
           // 复位过渡计时：重新走"前馈先建立、再撤 kp"的两段式
           ramp_t0_ = steady_now();
@@ -802,6 +804,8 @@ return_type HwArmHW::read(const rclcpp::Time& /*time*/, const rclcpp::Duration& 
     RCLCPP_ERROR_THROTTLE(logger(), throttle_clock(), 2000,
                           "CAN 总线硬故障，请求去激活");
     log_bus_status(openarm_->get_bus_status(), "read");
+    state_stale_any_ = true;
+    fault_latched_ = true;   // 硬故障同样锁存
     return return_type::ERROR;
   }
   // ② 软故障（ack error / FIFO 溢出）：只告警，不中断控制
@@ -832,6 +836,7 @@ return_type HwArmHW::read(const rclcpp::Time& /*time*/, const rclcpp::Duration& 
 
     if (stale) {
       state_stale_any_ = true;
+      fault_latched_ = true;   // 锁存，恢复后不自动重开前馈
       any_stale = true;
       if (!axis_stale_latched_[k]) {
         axis_stale_latched_[k] = true;
@@ -868,7 +873,7 @@ return_type HwArmHW::read(const rclcpp::Time& /*time*/, const rclcpp::Duration& 
 }
 
 // ──────────────────────────────────────────────────────────── write
-return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
+return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration& period) {
   if (!openarm_) return return_type::ERROR;
   // 电机没就绪（读不到反馈 → 没使能）时，一个 MIT 帧都不发
   if (!motors_ready_) return return_type::OK;
@@ -882,9 +887,41 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
   // 用实测角算出来的重力矩才是此刻真正需要的补偿量。
   const bool compute_gravity = gravity_comp_ && model_ && ws_;
   const bool apply_gravity = compute_gravity && !gravity_dry_run_;
+  // ── 过渡状态机（2026-11-26 审阅后重做）
+  //
+  // 旧做法：从 ramp_t0_ 起算 t，tau_scale = t/T。服务每次切换都重置
+  // ramp_t0_，于是：
+  //   · 已稳定位置保持（tau=1）→ 请求零重力：前馈 1→0 再爬回 1
+  //     ⇒ 切换瞬间把已建立的承重力矩扔掉，机械臂先沉一下
+  //   · ramp_time=0 时整个分支被跳过，kp_scale 保持 1
+  //     ⇒ 名义"零重力"实际 kp 仍是满的
+  //
+  // 现在：持久状态 + 速率逼近
+  //   · tau_scale_ 一旦建立就保持 1，切模式不会清零
+  //   · kp 只在 tau_scale_ 到 1 之后才开始下降（两阶段）
+  //   · ramp_time<=0 直接跳到目标
+  {
+    const double dt = period.seconds() > 0.0 ? period.seconds() : 0.008;
+    const bool zg = (zero_gravity_ || zero_gravity_srv_mode_);
+    const double tau_target = compute_gravity ? 1.0 : 0.0;
+    const double kp_target = (zg && tau_scale_ >= 1.0 - 1e-9) ? 0.0 : 1.0;
+    if (gravity_ramp_time_ > 0.0) {
+      const double rate = dt / gravity_ramp_time_;
+      tau_scale_ += std::clamp(tau_target - tau_scale_, -rate, rate);
+      if (tau_scale_ >= 1.0 - 1e-9) {
+        kp_scale_ += std::clamp(kp_target - kp_scale_, -rate, rate);
+      }
+    } else {
+      tau_scale_ = tau_target;
+      kp_scale_ = zg ? 0.0 : 1.0;
+    }
+    tau_scale_ = std::clamp(tau_scale_, 0.0, 1.0);
+    kp_scale_ = std::clamp(kp_scale_, 0.0, 1.0);
+  }
+  const double tau_scale = tau_scale_;
+  const double kp_scale = kp_scale_;
   // 过渡系数（两段式：前馈先建立，再撤 kp）。在 compute_gravity 块外声明，后面 kp 计算要用
-  double tau_scale = 1.0;
-  double kp_scale = 1.0;
+  // 过渡系数由持久状态 tau_scale_/kp_scale_ 推进，见下方
   if (compute_gravity) {
     Eigen::VectorXd q(static_cast<Eigen::Index>(ARM_DOF));
     for (size_t i = 0; i < ARM_DOF; ++i) q[static_cast<Eigen::Index>(i)] = pos_states_[i];
@@ -920,12 +957,6 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
       //    阶段 2  t ∈ [T, 2T)    tau_scale = 1，kp 满→0（仅零重力模式）
       //  ⚠️ 绝不可以在 kp=0 时让前馈从 0 慢慢升 —— 那是欠补偿，机械臂会先掉下来。
       const bool zg_now_early = (zero_gravity_ || zero_gravity_srv_mode_);
-      if (gravity_ramp_time_ > 0.0) {
-        const double t = std::max(0.0, steady_now() - ramp_t0_);
-        tau_scale = std::clamp(t / gravity_ramp_time_, 0.0, 1.0);
-        if (zg_now_early)
-          kp_scale = 1.0 - std::clamp((t - gravity_ramp_time_) / gravity_ramp_time_, 0.0, 1.0);
-      }
       const double gscale = gravity_scale_ * tau_scale;
       for (size_t i = 0; i < ARM_DOF; ++i) {
         // 关节坐标系内的总前馈：重力 + 恒定偏置修正（trim 也乘过渡系数）
@@ -953,7 +984,7 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
     //    g(q) 用的是冻结的 q，而机械臂可能已经在动 —— 前馈越算越错，
     //    形成正反馈把手臂甩出去（现场"往上飘拉不住"，只能断电）。
     //    宁可按"掉下来"处理，也不要按"甩出去"处理。
-    const bool ff_ok = apply_gravity && !state_stale_any_;
+    const bool ff_ok = apply_gravity && !state_stale_any_ && !fault_latched_;
     if (!ff_ok && apply_gravity) {
       RCLCPP_WARN_THROTTLE(logger(), throttle_clock(), 1000,
                            "状态不可信，已切断重力前馈（宁掉不甩）");

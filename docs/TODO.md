@@ -320,6 +320,64 @@ GraspNet 留作"堆叠/杂乱场景"的备用路径。
 - 现在 250 Hz，未做 `SCHED_FIFO` / `mlockall`
 - 目标 1 kHz 需要先解决 USB-CAN 的可持续帧率（实测 gs_usb ≈ 3000 fps）
 
+### C-43 CAN 通信硬件升级 —— DM-LinkX-4C 能否替代 USB 转 CANFD（**题外话，先记下**）
+
+**问题（2026-11-26 用户提出）**：用达妙 DM-LinkX 模块代替现在的 USB-CAN(gs_usb) 会有性能提升吗？
+
+**现在的事实**
+
+| 项 | 值 |
+|---|---|
+| 适配器 | gs_usb 单通道，经典 CAN 1 Mbps |
+| 需要的帧率（250 Hz） | 指令 6×250 + 状态 6×250 + 刷新 2×250 = **3500 fps** |
+| gs_usb 可持续帧率 | 实测约 **3000 fps** → **117%，已饱和** |
+| 表现 | 每 300 ms 出现一次 4~9 ms 的 read/write 卡顿 → 控制环 overrun |
+| 已采取的缓解 | `update_rate` 默认改 **125 Hz**（2250 fps，75%），overrun 从 20+ 降到 1 |
+
+**⚠️ 关键澄清：瓶颈不在 CAN 总线本身**
+
+```
+经典 CAN 1 Mbps，一帧 8 字节约 110~130 bit（含位填充）
+3500 fps × 120 bit ≈ 420 kbps ≈ **1 Mbps 的 42%**
+⇒ 总线还有余量，**卡在 USB/gs_usb 这一层**
+```
+
+**DM-LinkX-4C 规格（说明书 V1.1，2026-05-12）**
+
+| 项 | 规格 |
+|---|---|
+| 通道 | **4 路独立 CAN FD**，可同时收发 |
+| 数据段波特率 | 单通道最高 **8 Mbps** |
+| 压测（0 字节帧） | 单通道 **30,000+ fps** |
+| 压力测试结果 | 四通道 5M CANFD 千万帧，**丢包率 0%** |
+| 工作接口 | **USB 2.0 HS / ECAT(100M) / Ethernet(100/1000M)** |
+| 工作电压 / 温度 | DC 6-52V / 0~45℃ |
+
+**三种接入方式与代价**
+
+| 模式 | 保持 SocketCAN 吗 | 改动量 | 评价 |
+|---|---|---|---|
+| **USB** | ❌ 需要 DM-DeviceSDK，**说明书明确写"现有上位机暂未支持此模块"** | 大（要写自己的驱动层，替换 OpenArmCAN 的 socket 部分） | 性能最好但工作量最大 |
+| **ENET**（Cannelloni 转发） | ✅ 是（用户态以太网 SocketCAN 驱动） | 中（装 Cannelloni + 配 UDP） | **改动最小，现有代码几乎不用动** |
+| **ECAT** | ❌ 需要 EtherCAT 主站（IgH/SOEM） | 很大 | 除非整机走 EtherCAT，否则不值 |
+
+**⚠️ 已知限制**
+- ENET 模式**目前只能 DHCP，无法配静态 IP**
+- 本机是 VMware 虚拟机，加一块网卡要做虚拟网络配置（现有 `ens33` 是 NAT）
+- Cannelloni 是**用户态转发**，会引入额外延迟（需实测）
+
+**结论（暂定）**
+- **短期不需要**：125 Hz 对重力补偿（力矩刷新 8 ms）完全够用，overrun 已降到 1 次
+- **中期如果要做 250~1000 Hz**：走 **ENET + Cannelloni** 最省事，因为它保留了 `can0` 这个 SocketCAN 接口，`OpenArmCAN` 和上层代码不用改
+- **收益点**：① 更高控制频率 ② 4 通道可把 6 个电机拆到多路并发 ③ 压测 0% 丢包
+- **待确认**：DM-DeviceSDK 有没有 Linux 版；Cannelloni 在本机的实测延迟
+
+**动作**
+- [ ] 确认 DM-DeviceSDK 是否提供 Linux 版（有的话 USB 模式也可行）
+- [ ] 若购买：先在 ENET 模式下测 `candump` 的持续帧率和延迟，与 gs_usb 对比
+- [ ] 若实测延迟 < 1 ms 且帧率 > 6000 fps，则把 `update_rate` 提到 250，并重测 overrun
+- [ ] 到那时再评估 `C-38 实时性` 的 1 kHz 目标
+
 ### C-39 模型一致性校验
 - 运行时 `robot_description` 是 xacro 展开的，磁盘上还有构建产物
 - 改了 YAML 只编译 algorithms 时，URDF 可能是旧的

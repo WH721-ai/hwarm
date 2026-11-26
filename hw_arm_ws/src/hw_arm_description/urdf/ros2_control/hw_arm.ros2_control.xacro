@@ -78,6 +78,8 @@
           <param name="active_joints">${active_joints}</param>
           <!-- 每周期刷新几台电机（轮转）。0=不刷新。帧数恒定，避免突发丢帧 -->
           <param name="refresh_per_cycle">${refresh_per_cycle}</param>
+          <!-- 上电自动回零：零位是机械结构托住的安全位形，先回零确认再往外走 -->
+          <param name="return_to_zero">true</param>
           <param name="kp1">${control_gains['joint1']['kp']}</param>
           <param name="kp2">${control_gains['joint2']['kp']}</param>
           <param name="kp3">${control_gains['joint3']['kp']}</param>

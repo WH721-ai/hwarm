@@ -7,7 +7,8 @@
 //   · 关节名不再用字符串拼接，直接取 info.joints（修掉上游的 TODO）
 //   · read() 检查电机错误码，异常返回 ERROR（上游永远返回 OK）
 //   · 支持 require_all_motors:=false：缺电机时告警并继续（单电机调试用）
-//   · 回零默认关闭（return_to_zero:=false），避免上电意外动作
+//   · 回零默认开启（return_to_zero=true）：零位是机械结构托住的安全位形，
+//     上电先回零便于确认一切正常；不想要可用 return_to_zero:=false 关掉
 
 #pragma once
 
@@ -185,7 +186,7 @@ class HwArmHW : public hardware_interface::SystemInterface {
   std::string can_interface_ = "can0";
   bool can_fd_ = true;
   bool require_all_motors_ = false;   // 单电机调试时设 false
-  bool return_to_zero_ = false;       // 上电自动回零（默认关，安全）
+  bool return_to_zero_ = true;        // 上电自动回零（2026-11-26 起默认开：零位是结构托住的安全位形）
 
   // ── 硬件
   std::unique_ptr<openarm::can::socket::OpenArm> openarm_;

@@ -119,7 +119,7 @@ bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
   if (!get("require_all_motors").empty())
     require_all_motors_ = to_bool(get("require_all_motors"), false);
   if (!get("return_to_zero").empty())
-    return_to_zero_ = to_bool(get("return_to_zero"), false);
+    return_to_zero_ = to_bool(get("return_to_zero"), true);
 
   // refresh_per_cycle：每周期刷新几台电机（轮转覆盖全部）。
   // 0 = 完全不发 refresh（依赖电机自动上报）；默认 2。

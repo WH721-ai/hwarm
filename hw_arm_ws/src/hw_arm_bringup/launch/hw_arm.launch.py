@@ -85,12 +85,9 @@ def launch_setup(context, *args, **kwargs):
             package="controller_manager",
             executable="ros2_control_node",
             output="screen",
-            parameters=[
-                {"robot_description": robot_description},
-                controllers_file,
-                # 覆盖 yaml 里的 update_rate（yaml 仍保留 250，不改变默认行为）
-                {"controller_manager": {"update_rate": update_rate}},
-            ],
+            parameters=[{"robot_description": robot_description}, controllers_file],
+            # update_rate 用命令行 -p 覆盖 params 文件（cmdline 优先级最高）
+            arguments=["--ros-args", "-p", f"update_rate:={update_rate}"],
         ),
     ]
 

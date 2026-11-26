@@ -105,6 +105,10 @@ target_link_libraries(gravity_id_cli ${PROJECT_NAME} yaml-cpp)
 add_executable(ik_cli tools/ik_cli.cpp)
 target_link_libraries(ik_cli ${PROJECT_NAME})
 
+# 运动学离线审计（只算数，不接机器人）
+add_executable(kinematics_audit tools/kinematics_audit.cpp)
+target_link_libraries(kinematics_audit ${PROJECT_NAME})
+
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 

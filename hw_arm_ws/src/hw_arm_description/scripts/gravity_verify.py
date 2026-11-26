@@ -51,6 +51,10 @@ except ImportError:
     sys.exit(2)
 
 JOINTS = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
+
+# 位置环增益（来自 config/control/control_gains.yaml，被硬件插件的 kp1..kp6 使用）
+# 用途：验证"电机输出 = kp·位置误差"这个静力平衡关系，判断测量有没有被外力污染
+KP = np.array([70.0, 70.0, 70.0, 60.0, 10.0, 10.0])
 CMD_TOPIC = "/hw_arm_forward_position_controller/commands"
 
 
@@ -219,6 +223,12 @@ def main():
                     help="验证完回到起始位形（默认开）")
     ap.add_argument("--no-return-home", dest="return_home", action="store_false",
                     help="验证完停在最后一个位形")
+    ap.add_argument("--balance-tol", type=float, default=0.0,
+                    help="静力平衡检查容差 N·m。0=关闭（默认）。"
+                         "⚠️ 必须配合 --kp-scale：实测实际生效的 kp 只有配置值的 ~45%，"
+                         "用配置值检查会把所有位形都判成异常")
+    ap.add_argument("--kp-scale", type=float, default=0.45,
+                    help="实际 kp / 配置 kp 的比例（实测约 0.45，见 docs）")
     ap.add_argument("--save", default="",
                     help="把这次测到的样本写成 YAML（可并入辨识数据集重拟合）")
     args = ap.parse_args()
@@ -276,6 +286,32 @@ def main():
                 tau_meas = node.average_tau()
             g_pred = g_fn(q_meas)
             res = tau_meas - g_pred
+            # ══ 静力平衡检查（2026-11-26 现场踩到坑后加的）══
+            #
+            # 位置控制下电机输出 τ = kp·(q_des − q)。机械臂静止时这个 τ
+            # 必须等于它真正扛的力矩。所以：
+            #       τ_meas  ≈  kp · (q_goal − q_meas)
+            # 如果两边对不上，说明有**外部力**（支撑/阻挡/线束），
+            # 那份测量测的是"重力 − 外力"，不能拿来验证模型。
+            #
+            # ⚠️ 不能用"到位误差 < 1°"当判据 —— kp=70 时重力下垂本来就有
+            #    g/kp = 2~6°，正常的位形也会被判成异常（实测 6 个全被拒）。
+            # 反推**实际生效的 kp**（2026-11-26 现场发现它只有配置值的 ~45%）
+            tau_bal_cfg = KP * (q_goal - q_meas)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                kp_eff = np.where(np.abs(tau_bal_cfg) > 0.3,
+                                  tau_meas / tau_bal_cfg * KP, np.nan)
+            tau_bal = (KP * args.kp_scale) * (q_goal - q_meas)
+            imbalance = tau_meas - tau_bal
+            if args.balance_tol > 0.0 and np.abs(imbalance).max() > args.balance_tol:
+                j = int(np.argmax(np.abs(imbalance)))
+                print(f"  #{i+1} ⏭️ 跳过：静力不平衡 {np.abs(imbalance).max():.2f} N·m "
+                      f"> {args.balance_tol}（joint{j+1}）")
+                print(f"      实测 {tau_meas[j]:+.2f}  但 kp·(q_cmd−q_meas) = {tau_bal[j]:+.2f}")
+                print("      → 有外部力参与，残差不可用\n")
+                continue
+            kp_txt = " ".join(f"{x:5.0f}" if np.isfinite(x) else "  n/a" for x in kp_eff)
+            print(f"  #{i+1} kp_eff ≈ [{kp_txt}]  （配置 [70 70 70 60 10 10]）")
             rows.append((i, q_meas, tau_meas, g_pred, res))
             for j in range(6):
                 flag = "" if abs(res[j]) <= args.tol else "  ⚠️"

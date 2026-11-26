@@ -1,0 +1,56 @@
+zero_gravity_start_poses:
+  minimal_verified:
+    note: 实测已验证：两个轴都自由
+    q_deg:
+    - 0
+    - 5
+    - 25
+    - 0
+    - 0
+    - 0
+  recommended:
+    note: 更稳，joint2 残差只有 -0.04
+    q_deg:
+    - 0
+    - 10
+    - 25
+    - 0
+    - 0
+    - 0
+  comfortable:
+    note: 离限位更远，动作仍很小
+    q_deg:
+    - 0
+    - 20
+    - 30
+    - 0
+    - 0
+    - 0
+support_zones:
+  zero_pose_q2_q3: joint2 和 joint3 都坐在机械限位/结构上，模型补偿误差 +2.1/+5.7 N·m，禁止在此进零重力
+  joint2_liftoff_deg: 5
+  joint3_liftoff_deg_at_q2_0: 20
+suggested_gravity_trim:
+  from_liftoff_scan_all_axes:
+  - -0.01
+  - -0.14
+  - -0.48
+  - -0.08
+  - -0.22
+  - -0.09
+  conservative:
+  - 0.0
+  - 0.0
+  - -0.48
+  - 0.0
+  - -0.22
+  - 0.0
+  note: trim = 实测 - 模型；tau_ff = gravity_scale*g + trim。先在自由位形验证再启用
+evidence:
+  joint3_residual_free_deg_20_to_55:
+  - -0.43
+  - -0.52
+  - -0.44
+  - -0.48
+  joint2_residual_at_q2_0: -2.585
+  joint2_residual_at_q2_5: -0.377

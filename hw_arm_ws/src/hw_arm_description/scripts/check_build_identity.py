@@ -263,7 +263,11 @@ def main() -> int:
         print(" ✅ 构建身份一致：源码、二进制、参数文件对得上")
     else:
         print(" ❌ 构建身份**不一致** —— 在修好之前，任何日志/测量都不能用来下结论")
-        print("    处理：colcon build --symlink-install --packages-select hw_arm_hardware")
+        print("    处理：")
+        print("      touch hw_arm_ws/src/hw_arm_hardware/CMakeLists.txt   # 强制 CMake 重跑 configure")
+        print("      colcon build --symlink-install --packages-select hw_arm_hardware")
+        print("    [注意] 只跑 colcon build 不够 —— CMake 的 configure 只在 CMakeLists")
+        print("           变化时重跑，build stamp 不会更新，二进制里仍是旧提交号。")
     print("═" * 70)
 
     if args.json:

@@ -15,6 +15,14 @@
 #include <memory>
 #include <string>
 #include <vector>
+
+// ── 构建身份（CMake 编译期注入；单独编译这个头时给个兜底）
+#ifndef HW_ARM_GIT_COMMIT
+#define HW_ARM_GIT_COMMIT "unknown"
+#endif
+#ifndef HW_ARM_BUILD_TIME
+#define HW_ARM_BUILD_TIME "unknown"
+#endif
 #include <rclcpp/rclcpp.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 

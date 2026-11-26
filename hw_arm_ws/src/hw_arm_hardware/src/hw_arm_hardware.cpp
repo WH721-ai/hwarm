@@ -534,6 +534,8 @@ CallbackReturn HwArmHW::on_init(const hardware_interface::HardwareInfo& info) {
   vel_states_.assign(ARM_DOF, 0.0);
   tau_states_.assign(ARM_DOF, 0.0);
 
+  // 构建身份：日志本身成为"跑的是哪个提交"的证据
+  RCLCPP_INFO(logger(), "构建身份: %s @ %sZ", HW_ARM_GIT_COMMIT, HW_ARM_BUILD_TIME);
   RCLCPP_INFO(logger(), "HwArmHW 初始化完成");
   return CallbackReturn::SUCCESS;
 }

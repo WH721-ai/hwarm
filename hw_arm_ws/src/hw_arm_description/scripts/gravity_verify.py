@@ -171,28 +171,49 @@ class Verifier(Node):
                 ok = 0
         return False
 
-    def dither_and_mean(self, q_center, amp, n, duration):
-        """在位形附近小幅往复 n 次，取力矩平均
+    def dither_samples(self, q_center, amp, reps, duration, vel_tol=0.03):
+        """在位形附近做**成对双向**采样，返回逐样本数据（不过早平均）
 
-        为什么必须抖（2026-11-26 首次现场验证的教训）：
-          不抖时整体 rms 0.600，但辨识时（抖过的）是 0.184。
-          差值 sqrt(0.55²+0.184²)=0.58 正好对上 —— 说明多出来的 0.55
-          全是**静摩擦死区**，不是模型误差。
-          同一个位形换个接近方向，joint2/joint3 的读数能差 1~2 N·m。
+        ══ 为什么必须抖（2026-11-26 首次现场验证的教训）══
+        不抖时整体 rms 0.600，抖动后 0.415；sqrt(0.55²+0.184²)=0.58 正好对上，
+        说明多出来的 0.55 全是**静摩擦死区**，不是模型误差。
+
+        ══ 为什么必须成对（2026-11-26 外部审阅的意见）══
+        原来只做 3 次交替、每次停在 ±amp 后取一个快照，问题有三：
+          ① settle() 的返回值没检查 —— 没静止也照样取样
+          ② 3 次交替不是平衡的双向样本，奇数个时最后一侧多一次
+          ③ 把各样本的 q 平均后只算一次 g(mean(q))，
+             而 g 是非线性的，mean(g(q)) ≠ g(mean(q))
+
+        现在改成：
+          · 每次往复都取 **+amp 和 −amp 两个样本**（成对，必然平衡）
+          · 任一样本没静止就丢弃该样本
+          · 每个样本单独算残差，最后再平均
+          · 另外给出"成对中点"估计 —— 静摩擦在两侧等值反向，中点把它消掉
+
+        返回: list[dict(q_cmd, q, tau, settled)]
         """
-        qs, taus = [], []
-        for k in range(n):
-            sgn = 1.0 if (k % 2 == 0) else -1.0
-            q_off = q_center.copy()
-            q_off[1] += sgn * amp
-            q_off[2] -= sgn * amp * 1.5
-            self.move_to(q_off, duration)
-            self.settle(need=6, timeout=3.0)
-            qs.append(self.q.copy())
-            taus.append(self.tau.copy())
-        if not qs:
-            return q_center, np.zeros(6)
-        return np.mean(qs, axis=0), np.mean(taus, axis=0)
+        samples = []
+        for r in range(reps):
+            for sgn in (+1.0, -1.0):
+                q_cmd = q_center.copy()
+                q_cmd[1] += sgn * amp
+                q_cmd[2] -= sgn * amp * 1.5
+                self.move_to(q_cmd, duration)
+                settled = self.settle(vel_tol=vel_tol, need=6, timeout=4.0)
+                if not settled:
+                    samples.append({"q_cmd": q_cmd, "q": self.q.copy(),
+                                    "tau": self.tau.copy(), "settled": False})
+                    continue
+                # 再多取几帧平均，压低量化噪声
+                taus = []
+                for _ in range(6):
+                    rclpy.spin_once(self, timeout_sec=0.05)
+                    if self.tau is not None:
+                        taus.append(self.tau.copy())
+                samples.append({"q_cmd": q_cmd, "q": self.q.copy(),
+                                "tau": np.mean(taus, axis=0), "settled": True})
+        return samples
 
     def average_tau(self, n=8):
         acc = []
@@ -269,8 +290,8 @@ def main():
         q_start = node.q.copy()
         print(f"\n起始 q = {np.round(q_start, 4)}")
         print("开始验证……\n")
-        print(f"  {'#':>2} {'轴':>7}{'实测τ':>9}{'预测g':>9}{'残差':>9}   ")
-        print("  " + "-" * 52)
+        print(f"  {'#':>2} {'轴':>7}{'实测τ':>9}{'预测g':>9}{'残差':>9}{'中点残差':>9}   ")
+        print("  " + "-" * 62)
 
         rows = []
         for i, q_goal in enumerate(poses):
@@ -278,14 +299,36 @@ def main():
             if not node.settle():
                 print(f"  #{i+1} ⚠️ 没等到静止，跳过")
                 continue
+            q_center = node.q.copy()
             if args.dither > 0:
-                q_meas, tau_meas = node.dither_and_mean(
-                    node.q.copy(), args.dither_amp, args.dither, args.dither_time)
+                samples = node.dither_samples(
+                    q_center, args.dither_amp, args.dither,
+                    args.dither_time, vel_tol=args.vel_tol)
             else:
-                q_meas = node.q.copy()
-                tau_meas = node.average_tau()
-            g_pred = g_fn(q_meas)
+                settled = node.settle(vel_tol=args.vel_tol, need=6, timeout=4.0)
+                samples = [{"q_cmd": q_goal, "q": node.q.copy(),
+                            "tau": node.average_tau(), "settled": settled}]
+
+            good = [s for s in samples if s["settled"]]
+            if not good:
+                print(f"  #{i+1} ⏭️ 跳过：{len(samples)} 个样本全都没静止")
+                continue
+            if len(good) < len(samples):
+                print(f"  #{i+1} ⚠️ {len(samples)-len(good)}/{len(samples)} 个样本没静止，已丢弃")
+
+            # 逐样本算残差再平均（g 非线性，不能先平均 q 再算 g）
+            q_meas = np.mean([s["q"] for s in good], axis=0)
+            tau_meas = np.mean([s["tau"] for s in good], axis=0)
+            g_pred = np.mean([g_fn(s["q"]) for s in good], axis=0)
+            # 成对中点：静摩擦两侧等值反向，中点把它消掉
+            if len(good) % 2 == 0:
+                halves = len(good) // 2
+                tau_mid = 0.5 * (np.mean([s["tau"] for s in good[:halves]], axis=0) +
+                                 np.mean([s["tau"] for s in good[halves:]], axis=0))
+            else:
+                tau_mid = tau_meas
             res = tau_meas - g_pred
+            res_mid = tau_mid - g_pred
             # ══ 静力平衡检查（2026-11-26 现场踩到坑后加的）══
             #
             # 位置控制下电机输出 τ = kp·(q_des − q)。机械臂静止时这个 τ
@@ -297,7 +340,11 @@ def main():
             # ⚠️ 不能用"到位误差 < 1°"当判据 —— kp=70 时重力下垂本来就有
             #    g/kp = 2~6°，正常的位形也会被判成异常（实测 6 个全被拒）。
             # 反推**实际生效的 kp**（2026-11-26 现场发现它只有配置值的 ~45%）
-            tau_bal_cfg = KP * (q_goal - q_meas)
+            # ⚠️ 审阅意见：kp_eff 必须用**各样本实际发送的 q_cmd**，
+            #    而不是最初的 q_goal —— 抖动时命令已经偏了 amp，
+            #    用 q_goal 会和真实的控制方程对不上。
+            q_cmd_mean = np.mean([s["q_cmd"] for s in good], axis=0)
+            tau_bal_cfg = KP * (q_cmd_mean - q_meas)
             with np.errstate(divide='ignore', invalid='ignore'):
                 kp_eff = np.where(np.abs(tau_bal_cfg) > 0.3,
                                   tau_meas / tau_bal_cfg * KP, np.nan)
@@ -312,11 +359,11 @@ def main():
                 continue
             kp_txt = " ".join(f"{x:5.0f}" if np.isfinite(x) else "  n/a" for x in kp_eff)
             print(f"  #{i+1} kp_eff ≈ [{kp_txt}]  （配置 [70 70 70 60 10 10]）")
-            rows.append((i, q_meas, tau_meas, g_pred, res))
+            rows.append((i, q_meas, tau_meas, g_pred, res, res_mid))
             for j in range(6):
                 flag = "" if abs(res[j]) <= args.tol else "  ⚠️"
                 print(f"  {i+1:>2} {'joint'+str(j+1):>7}{tau_meas[j]:9.3f}"
-                      f"{g_pred[j]:9.3f}{res[j]:9.3f}{flag}")
+                      f"{g_pred[j]:9.3f}{res[j]:9.3f}{res_mid[j]:9.3f}{flag}")
             print()
 
         if args.return_home:
@@ -334,7 +381,7 @@ def main():
             try:
                 import yaml as _yaml
                 out = [{"q": [float(x) for x in q], "tau": [float(x) for x in tau],
-                        "tag": "A"} for _, q, tau, _, _ in rows]
+                        "tag": "A"} for _, q, tau, _, _, _ in rows]
                 os.makedirs(os.path.dirname(os.path.abspath(args.save)), exist_ok=True)
                 with open(args.save, "w") as f:
                     _yaml.safe_dump({"samples": out,
@@ -351,7 +398,10 @@ def main():
         R = np.array([r[4] for r in rows])
         print("══ 汇总 ══")
         print(f"  位形数: {len(rows)}")
+        Rmid = np.array([r[5] for r in rows])
         print(f"  整体 rms : {np.sqrt((R**2).mean()):.3f} N·m")
+        print(f"  中点 rms : {np.sqrt((Rmid**2).mean()):.3f} N·m"
+              "   ← 成对中点，静摩擦抵消后的估计")
         print(f"  每轴 rms : {np.round(np.sqrt((R**2).mean(0)), 3)}")
         print(f"  每轴 |max|: {np.round(np.abs(R).max(0), 3)}")
         worst = int(np.argmax(np.abs(R).max(0)))

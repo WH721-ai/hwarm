@@ -70,7 +70,10 @@ def launch_setup(context, *args, **kwargs):
                 " zero_gravity_kd:=", gkd,
                 " gravity_ramp_time:=", gramp,
                 " gravity_params_path:=", gpath,
-                " gravity_trim:=", gtrim,
+                # ⚠️ 值里有空格，必须加引号 —— 否则 xacro 会把
+                #    "0 0 0 0 0 0" 拆成 6 个参数，报
+                #    "expected exactly one input file as argument"
+                " gravity_trim:='", gtrim, "'",
             ]
         ),
         value_type=str,

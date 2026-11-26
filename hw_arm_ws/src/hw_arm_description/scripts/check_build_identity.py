@@ -89,6 +89,24 @@ def find_so() -> list[Path]:
     return uniq
 
 
+def src_fingerprint() -> str:
+    """和 CMake 相同的算法：本包所有 .cpp/.hpp 按路径排序后拼接再 sha256"""
+    files = sorted(list(PKG.glob("src/**/*.cpp")) + list(PKG.glob("include/**/*.hpp")))
+    buf = "".join(f.read_text(encoding="utf-8", errors="replace") for f in files)
+    return hashlib.sha256(buf.encode()).hexdigest()[:16]
+
+
+def embedded_fingerprint(so: Path) -> str:
+    """从 .so 里取 CMake 注入的源码指纹"""
+    try:
+        out = subprocess.run(["strings", "-a", str(so)],
+                             capture_output=True, text=True, timeout=60).stdout
+    except Exception:
+        return ""
+    cands = re.findall(r"^([0-9a-f]{16})$", out, re.M)
+    return cands[0] if cands else ""
+
+
 def embedded_commit(so: Path) -> str:
     """.so 里 CMake 注入的提交号（形如 62fdcb093bc7 或 62fdcb093bc7+dirty）"""
     try:
@@ -178,11 +196,26 @@ def main() -> int:
             is_dirty_build = "+dirty" in emb
             match = (emb_clean == short)
             print(f"  .so 内嵌提交: {emb}{'  (构建时有未提交改动)' if is_dirty_build else ''}")
-            print(f"  与 HEAD 一致: {'✅ 是' if match else '❌ 否 → 二进制已过期，请重新构建'}")
-            if not match:
-                ok_identity = False
+            print(f"  与 HEAD 一致: {'✅ 是' if match else '⚠️ 否（提交号不同，但若源码指纹一致则二进制仍然忠实）'}")
             manifest["so"]["embedded_commit"] = emb
             manifest["so"]["matches_head"] = match
+
+            # ⚠️ 源码指纹才是**真正的忠实性判据**
+            #    提交号每次 commit 都会变（哪怕只改了 Python），用它判定会天天报警
+            cur_fp = src_fingerprint()
+            emb_fp = embedded_fingerprint(sos[0])
+            print(f"  源码指纹    : 当前 {cur_fp}  /  .so 内 {emb_fp or '(未注入)'}")
+            if not emb_fp:
+                print("    ⚠️ .so 里没有源码指纹 —— 是加指纹之前构建的")
+                ok_identity = False
+            elif emb_fp != cur_fp:
+                print("    ❌ 不一致 → **二进制与当前 C++ 源码不符，必须重新构建**")
+                ok_identity = False
+            else:
+                print("    ✅ 一致 → 二进制确实是这套 C++ 源码编译出来的")
+            manifest["so"]["src_fingerprint_now"] = cur_fp
+            manifest["so"]["src_fingerprint_embedded"] = emb_fp
+            manifest["so"]["source_faithful"] = (emb_fp == cur_fp)
 
         # ④ 源码是否比 .so 新
         newest = max((p for p in PKG.rglob("*") if p.is_file() and
@@ -191,10 +224,12 @@ def main() -> int:
         if newest:
             so_t = sos[0].resolve().stat().st_mtime
             newer = newest.stat().st_mtime > so_t
-            print(f"  最新源文件  : {newest.name}  {'❌ 比 .so 新（需要重新编译）' if newer else '✅ 比 .so 旧'}")
-            if newer:
-                ok_identity = False
-            manifest["so"]["source_newer"] = newer
+            # ⚠️ mtime 只作提示，不作判据：
+            #    改完又改回来、或只是 touch 一下，mtime 会变但内容没变；
+            #    真正的判据是上面的**源码指纹**。
+            print(f"  最新源文件  : {newest.name}  "
+                  f"{'⚠️ mtime 比 .so 新（若内容没变可忽略，以指纹为准）' if newer else '✅ 比 .so 旧'}")
+            manifest["so"]["source_newer_mtime"] = newer
 
     # ⑤ 参数文件哈希
     print()

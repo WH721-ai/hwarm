@@ -23,6 +23,9 @@
 #ifndef HW_ARM_BUILD_TIME
 #define HW_ARM_BUILD_TIME "unknown"
 #endif
+#ifndef HW_ARM_SRC_HASH
+#define HW_ARM_SRC_HASH "unknown"
+#endif
 #include <rclcpp/rclcpp.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 

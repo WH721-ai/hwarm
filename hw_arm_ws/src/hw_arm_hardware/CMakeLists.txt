@@ -42,12 +42,30 @@ else()
   set(HW_ARM_GIT_DIRTY_FLAG "")
 endif()
 string(TIMESTAMP HW_ARM_BUILD_TIME "%Y-%m-%d %H:%M:%S" UTC)
+
+# 源码指纹：把本包所有 .cpp/.hpp 的内容 hash 起来。
+# 比"提交号"更能回答"这个 .so 是不是和当前源码一致"——
+# 提交号在每次 commit 后都会变（哪怕只改了 Python 脚本），
+# 而源码指纹只在 C++ 真的变了才变。
+file(GLOB_RECURSE HW_ARM_SRC_FILES
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp)
+list(SORT HW_ARM_SRC_FILES)
+set(HW_ARM_SRC_CONCAT "")
+foreach(f ${HW_ARM_SRC_FILES})
+  file(READ "${f}" _content)
+  string(APPEND HW_ARM_SRC_CONCAT "${_content}")
+endforeach()
+string(SHA256 HW_ARM_SRC_HASH "${HW_ARM_SRC_CONCAT}")
+string(SUBSTRING "${HW_ARM_SRC_HASH}" 0 16 HW_ARM_SRC_HASH_SHORT)
+message(STATUS "hw_arm_hardware source fingerprint: ${HW_ARM_SRC_HASH_SHORT}")
 message(STATUS "hw_arm_hardware build stamp: ${HW_ARM_GIT_COMMIT}${HW_ARM_GIT_DIRTY_FLAG} @ ${HW_ARM_BUILD_TIME}Z")
 
 add_library(hw_arm_hardware SHARED src/hw_arm_hardware.cpp)
 target_compile_definitions(hw_arm_hardware PRIVATE
   HW_ARM_GIT_COMMIT="${HW_ARM_GIT_COMMIT}${HW_ARM_GIT_DIRTY_FLAG}"
-  HW_ARM_BUILD_TIME="${HW_ARM_BUILD_TIME}")
+  HW_ARM_BUILD_TIME="${HW_ARM_BUILD_TIME}"
+  HW_ARM_SRC_HASH="${HW_ARM_SRC_HASH_SHORT}")
 target_include_directories(hw_arm_hardware PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)

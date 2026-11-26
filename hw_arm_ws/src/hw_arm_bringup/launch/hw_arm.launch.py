@@ -52,6 +52,7 @@ def launch_setup(context, *args, **kwargs):
     gkd = LaunchConfiguration("zero_gravity_kd").perform(context)
     gramp = LaunchConfiguration("gravity_ramp_time").perform(context)
     gpath = LaunchConfiguration("gravity_params_path").perform(context)
+    update_rate = int(LaunchConfiguration("update_rate").perform(context))
 
     robot_description = ParameterValue(
         Command(
@@ -84,7 +85,12 @@ def launch_setup(context, *args, **kwargs):
             package="controller_manager",
             executable="ros2_control_node",
             output="screen",
-            parameters=[{"robot_description": robot_description}, controllers_file],
+            parameters=[
+                {"robot_description": robot_description},
+                controllers_file,
+                # 覆盖 yaml 里的 update_rate（yaml 仍保留 250，不改变默认行为）
+                {"controller_manager": {"update_rate": update_rate}},
+            ],
         ),
     ]
 
@@ -136,6 +142,12 @@ def generate_launch_description():
             "gravity_params_path", default_value="",
             description="gravity_id_cli 产出的 theta YAML；空 = 用 URDF 标称惯性参数"),
         DeclareLaunchArgument("gravity_scale", default_value="1.0"),
+        DeclareLaunchArgument(
+            "update_rate", default_value="250",
+            description="控制环频率 Hz。**USB-CAN 吞吐有限，250 Hz 时总线已接近饱和**"
+                        "（6 电机 × 250 Hz × 3 类帧 ≈ 3500 fps，实测上限约 3000 fps），"
+                        "表现为偶发 4~6 ms 的 read/write 卡顿。"
+                        "零重力拖拽建议 125，对 8 ms 的力矩刷新完全够用"),
         DeclareLaunchArgument("zero_gravity_kd", default_value="1.0"),
         DeclareLaunchArgument("gravity_ramp_time", default_value="3.0",
                               description="激活后重力从 0 升到满额的时间 s"),

@@ -680,6 +680,12 @@ CallbackReturn HwArmHW::on_activate(const rclcpp_lifecycle::State& /*prev*/) {
     return_to_zero();
   }
 
+  // G02：激活时刻必须记下来，否则 ramp 恒为满额。
+  //   放在 return_to_zero() **之后**：回零是个阻塞的 100 步插值，
+  //   若在它之前起算，回零结束时斜坡可能已经满额，正好在操作者以为
+  //   "还有 5 秒可以扶稳"的时候把重力全部加上。
+  ramp_t0_ = steady_now();
+
   // ── 运行时切换零重力的服务
   //   用法：
   //     ros2 service call /hw_arm_hardware_interface/set_zero_gravity \
@@ -690,13 +696,27 @@ CallbackReturn HwArmHW::on_activate(const rclcpp_lifecycle::State& /*prev*/) {
         "~/set_zero_gravity",
         [this](const std::shared_ptr<std_srvs::srv::SetBool::Request> req,
                std::shared_ptr<std_srvs::srv::SetBool::Response> res) {
+          // ══ G03：进入零重力必须先满足条件 ══
+          //  否则会出现"kp 被关掉、却没有任何重力前馈"的状态 —— 机械臂直接掉。
+          if (req->data) {
+            if (!gravity_comp_) { res->success=false; res->message="拒绝：重力补偿未开启"; 
+              RCLCPP_ERROR(logger(), "%s", res->message.c_str()); return; }
+            if (gravity_dry_run_) { res->success=false; res->message="拒绝：处于 dry-run"; 
+              RCLCPP_ERROR(logger(), "%s", res->message.c_str()); return; }
+            if (!gparams_.valid) { res->success=false; res->message="拒绝：重力参数未加载"; 
+              RCLCPP_ERROR(logger(), "%s", res->message.c_str()); return; }
+            if (!motors_ready_) { res->success=false; res->message="拒绝：电机未就绪"; 
+              RCLCPP_ERROR(logger(), "%s", res->message.c_str()); return; }
+          }
           // 切换前把位置命令对齐到当前位形：退出时机械臂停在原地不会弹回去
           for (size_t j = 0; j < ARM_DOF; ++j) pos_commands_[j] = pos_states_[j];
           zero_gravity_srv_mode_ = req->data;
-          RCLCPP_WARN(logger(), "★ %s零重力（kp %s）",
+          // 复位过渡计时：重新走"前馈先建立、再撤 kp"的两段式
+          ramp_t0_ = steady_now();
+          RCLCPP_WARN(logger(), "★ %s零重力（kp %s，过渡 %.1f s）",
                       req->data ? "进入" : "退出",
-                      req->data ? "→ 0，只靠 tau_ff 支撑"
-                                : "恢复，位置环重新接管当前位形");
+                      req->data ? "→ 0，只靠 tau_ff 支撑" : "恢复，位置环重新接管",
+                      gravity_ramp_time_ * (req->data ? 2.0 : 1.0));
           res->success = true;
           res->message = req->data ? "zero-gravity ON" : "zero-gravity OFF";
         });
@@ -823,6 +843,9 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
   // 用实测角算出来的重力矩才是此刻真正需要的补偿量。
   const bool compute_gravity = gravity_comp_ && model_ && ws_;
   const bool apply_gravity = compute_gravity && !gravity_dry_run_;
+  // 过渡系数（两段式：前馈先建立，再撤 kp）。在 compute_gravity 块外声明，后面 kp 计算要用
+  double tau_scale = 1.0;
+  double kp_scale = 1.0;
   if (compute_gravity) {
     Eigen::VectorXd q(static_cast<Eigen::Index>(ARM_DOF));
     for (size_t i = 0; i < ARM_DOF; ++i) q[static_cast<Eigen::Index>(i)] = pos_states_[i];
@@ -847,16 +870,30 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
         }
       }
 
-      // ── 斜坡：激活后 scale 从 0 线性升到 gravity_scale_，
-      //    给操作者几秒时间扶稳，避免一使能就猛地下垂
-      double ramp = 1.0;
-      if (gravity_ramp_time_ > 0.0)
-        ramp = std::clamp((steady_now() - ramp_t0_) / gravity_ramp_time_, 0.0, 1.0);
-      const double gscale = gravity_scale_ * ramp;
+      // ── 重力前馈斜坡（2026-11-26 修 G02）
+      //
+      //  原来的 ramp_t0_ 从来没被赋值（一直是 0），而 steady_now() 返回
+      //  time_since_epoch 秒（~1.79e9），所以 (1.79e9-0)/T 永远 >> 1，
+      //  clamp 后恒为 1 —— **日志写着"斜坡 5.0 s"，实际一使能就满额**。
+      //
+      //  两段式过渡（kp 在时先把前馈建立起来，再撤 kp）：
+      //    阶段 1  t ∈ [0, T)     tau_scale 0→1，kp 保持满
+      //    阶段 2  t ∈ [T, 2T)    tau_scale = 1，kp 满→0（仅零重力模式）
+      //  ⚠️ 绝不可以在 kp=0 时让前馈从 0 慢慢升 —— 那是欠补偿，机械臂会先掉下来。
+      const bool zg_now_early = (zero_gravity_ || zero_gravity_srv_mode_);
+      if (gravity_ramp_time_ > 0.0) {
+        const double t = std::max(0.0, steady_now() - ramp_t0_);
+        tau_scale = std::clamp(t / gravity_ramp_time_, 0.0, 1.0);
+        if (zg_now_early)
+          kp_scale = 1.0 - std::clamp((t - gravity_ramp_time_) / gravity_ramp_time_, 0.0, 1.0);
+      }
+      const double gscale = gravity_scale_ * tau_scale;
       for (size_t i = 0; i < ARM_DOF; ++i) {
+        // 关节坐标系内的总前馈：重力 + 恒定偏置修正（trim 也乘过渡系数）
         // 力矩限幅：参数算错时不许把电机打满
-        gravity_tau_[i] = std::clamp(gscale * g[static_cast<Eigen::Index>(i)],
-                                     -tau_limit_[i], tau_limit_[i]);
+        const double ff = gscale * g[static_cast<Eigen::Index>(i)] +
+                          tau_scale * gravity_trim_[i];
+        gravity_tau_[i] = std::clamp(ff, -tau_limit_[i], tau_limit_[i]);
       }
 
     if (gravity_dry_run_) {
@@ -876,13 +913,16 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
     const double tau_cmd = tau_commands_[j] +
                            (apply_gravity ? gravity_tau_[j] : 0.0);
     // 零重力模式：kp 恒 0（位置命令失效），只留速度阻尼 + 重力前馈
+    // G04：统一用实际模式（含服务进入的），速度守护也用这个
     const bool zg_now = (zero_gravity_ || zero_gravity_srv_mode_);
-    const double kp_use = zg_now ? 0.0 : kp_[j];
-    double kd_use = zg_now ? zero_gravity_kd_ : kd_[j];
+    // G02：kp 按 kp_scale 过渡（阶段 2 才降到 0），不是瞬间归零
+    const double kp_use = kp_scale * kp_[j];
+    double kd_use = zg_now ? (zero_gravity_kd_ * (1.0 - kp_scale) + kd_[j] * kp_scale)
+                           : kd_[j];
     // ── 零重力速度守护
     //  某一轴转得比 zero_gravity_vel_limit_ 快，多半是重力前馈不够、机械臂在往下溜。
     //  **不能直接去激活**（那会自由落体），而是把 kd 放大当刹车并节流报警。
-    if (zero_gravity_ && std::abs(vel_states_[j]) > zero_gravity_vel_limit_) {
+    if (zg_now && std::abs(vel_states_[j]) > zero_gravity_vel_limit_) {
       kd_use = std::min(5.0, zero_gravity_kd_ * 4.0);
       if (++vel_guard_count_ % 250 == 1)
         RCLCPP_WARN(logger(),

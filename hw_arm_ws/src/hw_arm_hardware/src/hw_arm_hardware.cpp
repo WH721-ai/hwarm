@@ -333,16 +333,34 @@ bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
     zero_gravity_kd_ = v;
   }
   if (zero_gravity_) {
-    // 零重力必然要求真正施加重力前馈，忽略 dry_run
-    gravity_comp_ = true;
+    // ══ 2026-11-26 实测后的结论：**开机就进零重力是不安全的** ══
+    //
+    // joint3 扫掠实测（algo/data/joint3_sweep.yaml）：
+    //   q3=  0°  τ实测 0.40  模型 6.09   残差 -5.69  ← 被结构托住
+    //   q3= 20°  τ实测 5.38  模型 5.47   残差 -0.43  ← 自由，模型吻合
+    //   q3= 55°  τ实测 2.65  模型 3.14   残差 -0.48
+    // joint2 更极端：它的 URDF 下限是 -2.10°，而 q2≈0 时只有 1.4° 余量，
+    // 整场都坐在机械限位上，电机只出 0.3 N·m 而模型说要 2.4~5.6。
+    //
+    // 也就是说：零位（return_to_zero 的目的地）恰恰是**补偿误差最大**的位形。
+    // 在那儿进零重力，tau_ff 会比真实需要多出 [2.1, 5.7] N·m，
+    // 按 kd=1.5 算稳态漂移 80 / 217 °/s —— 机械臂会猛地往上冲。
+    //
+    // ⇒ 启动时不再允许直接进零重力。必须先位置控制走到自由位形，
+    //   再调用服务 ~/set_zero_gravity 进入。
+    RCLCPP_ERROR(logger(),
+                 "★ 拒绝在启动时进入零重力：零位是机械结构托住的位形，"
+                 "那里模型的补偿误差最大（实测 joint2 +2.1 / joint3 +5.7 N·m）。");
+    RCLCPP_ERROR(logger(),
+                 "  正确流程：① 先以位置控制启动（zero_gravity:=false）"
+                 "  ② 走到自由位形（建议 q2 ≥ 30°、q3 ≥ 20°，离开机械限位）");
+    RCLCPP_ERROR(logger(),
+                 "            ③ ros2 service call ~/set_zero_gravity "
+                 "std_srvs/srv/SetBool \"{data: true}\"");
+    RCLCPP_ERROR(logger(), "  已自动改为位置控制模式启动。");
+    zero_gravity_ = false;          // 强制关掉，走位置控制
+    gravity_comp_ = true;           // 但重力补偿照常开着（位置控制下更省力）
     gravity_dry_run_ = false;
-    RCLCPP_WARN(logger(),
-                "★ 零重力（拖动示教）模式已开启：kp=0 / kd=%.2f / tau_ff=%.2f·g(q)",
-                zero_gravity_kd_, gravity_scale_);
-    RCLCPP_WARN(logger(),
-                "  机械臂会进入'失重'状态 —— 请扶着它，或确认它能自己站稳！");
-    RCLCPP_WARN(logger(),
-                "  此模式请只启动 joint_state_broadcaster，不要启动轨迹控制器");
   }
   if (!get("urdf_file").empty()) urdf_file_ = get("urdf_file");
 

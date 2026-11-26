@@ -239,6 +239,9 @@ def main():
                          "不抖时静摩擦死区会贡献约 0.55 N·m 的假误差")
     ap.add_argument("--dither-amp", type=float, default=0.010, help="抖动幅度 rad（默认 0.010≈0.57°）")
     ap.add_argument("--dither-time", type=float, default=2.0, help="每次抖动运动时长 s")
+    ap.add_argument("--vel-tol", dest="vel_tol", type=float, default=0.03,
+                    help="判定静止的速度阈值 rad/s（默认 0.03）。"
+                         "⚠️ 必须大于编码器量化噪声：joint1 量化步长约 0.0195 rad/s")
     ap.add_argument("--dry-run", action="store_true", help="只打印位形，不动机械臂")
     ap.add_argument("--return-home", dest="return_home", action="store_true", default=True,
                     help="验证完回到起始位形（默认开）")

@@ -348,6 +348,24 @@ bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
 
   // ── 拖动示教 / 重力补偿的安全参数（C-05 之后新增）
   if (!get("gravity_params_path").empty()) gravity_params_path_ = get("gravity_params_path");
+
+  // 恒定力矩偏置修正（N·m），例如 "0 0.30 -0.55 0 0 0"
+  if (!get("gravity_trim").empty()) {
+    std::vector<double> v;
+    for (const auto& tok : split_ws(get("gravity_trim"))) {
+      double d = 0.0;
+      if (!parse_double("gravity_trim", tok, d)) return false;
+      v.push_back(d);
+    }
+    if (v.size() != ARM_DOF) {
+      RCLCPP_ERROR(logger(), "gravity_trim 需要 %zu 个数，实际 %zu", ARM_DOF, v.size());
+      return false;
+    }
+    gravity_trim_.assign(v.begin(), v.end());
+    RCLCPP_WARN(logger(), "恒定力矩偏置修正: [%.3f %.3f %.3f %.3f %.3f %.3f] N·m",
+                gravity_trim_[0], gravity_trim_[1], gravity_trim_[2],
+                gravity_trim_[3], gravity_trim_[4], gravity_trim_[5]);
+  }
   if (!get("gravity_ramp_time").empty()) {
     double v = 3.0;
     if (!parse_double("gravity_ramp_time", get("gravity_ramp_time"), v)) return false;

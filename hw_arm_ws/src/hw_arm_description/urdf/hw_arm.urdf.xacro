@@ -36,6 +36,7 @@
   <xacro:arg name="gravity_scale" default="1.0" />
   <xacro:arg name="zero_gravity_kd" default="1.0" />
   <xacro:arg name="gravity_ramp_time" default="3.0" />
+  <xacro:arg name="gravity_trim" default="0 0 0 0 0 0" />
 
   <xacro:arg name="with_gripper" default="true" />
   <xacro:arg name="gripper_xyz" default="0 0 0" />
@@ -84,6 +85,7 @@
     gravity_scale="$(arg gravity_scale)"
     zero_gravity_kd="$(arg zero_gravity_kd)"
     gravity_ramp_time="$(arg gravity_ramp_time)"
+    gravity_trim="$(arg gravity_trim)"
     control_gains="${control_gains}" />
 
 </robot>

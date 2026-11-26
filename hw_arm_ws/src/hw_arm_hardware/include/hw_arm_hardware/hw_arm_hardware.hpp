@@ -179,6 +179,20 @@ class HwArmHW : public hardware_interface::SystemInterface {
   std::vector<double> tau_limit_ = {120.0, 45.0, 28.0, 10.0, 7.0, 7.0};
   double zero_gravity_vel_limit_ = 2.0;      // rad/s
   int vel_guard_count_ = 0;                  // 连续超速周期数（用于日志）
+
+  // ── 恒定力矩偏置修正（gravity_trim）
+  //
+  // 2026-11-26 现场发现：同一套 θ̂，隔了 12 小时再测，
+  //   joint3 的实测力矩系统性比模型低 **0.55 N·m**，
+  //   而且残差与位形角的相关性只有 -0.74（斜率 -0.008 N·m/°，
+  //   比"零位偏移"应有的 ±0.09 N·m/° 小一个数量级）
+  //   ⇒ 不是零位漂移，是**恒定力矩偏置漂移**
+  //      （电流传感器零点温漂 / 线缆张力 / 减速器预紧力）
+  //
+  // 这类漂移任何参数辨识都吸收不了（它会随时间变），只能运行时补：
+  //     tau_ff = ramp × (gravity_scale × g(q) + trim)
+  // trim 的单位是 N·m，逐轴。
+  std::vector<double> gravity_trim_ = {0, 0, 0, 0, 0, 0};
   // direction 参数写成 " +1 -1 -1 +1 +1 +1 " 时的缓存（懒解析）
   std::vector<std::string> direction_vec_;
 

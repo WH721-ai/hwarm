@@ -55,6 +55,7 @@
                         gravity_scale:=1.0
                         zero_gravity_kd:=1.0
                         gravity_ramp_time:=3.0
+                        gravity_trim:='0 0 0 0 0 0'
                       use_gazebo:=false">
 
     <ros2_control name="${interface_name}" type="system">
@@ -113,6 +114,8 @@
             <param name="gravity_params_path">${gravity_params_path}</param>
           </xacro:if>
           <param name="gravity_ramp_time">${gravity_ramp_time}</param>
+          <!-- 恒定力矩偏置修正（N·m），抵消运行过程中会漂的电流零点/线缆张力 -->
+          <param name="gravity_trim">${gravity_trim}</param>
           <!-- 逐轴力矩限幅（电机连续额定，N·m）—— 参数算错时不许打满 -->
           <param name="tau_limit">40 10 12 3.5 3 3</param>
 

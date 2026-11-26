@@ -53,6 +53,7 @@ def launch_setup(context, *args, **kwargs):
     gramp = LaunchConfiguration("gravity_ramp_time").perform(context)
     gpath = LaunchConfiguration("gravity_params_path").perform(context)
     update_rate = int(LaunchConfiguration("update_rate").perform(context))
+    gtrim = LaunchConfiguration("gravity_trim").perform(context)
 
     robot_description = ParameterValue(
         Command(
@@ -69,6 +70,7 @@ def launch_setup(context, *args, **kwargs):
                 " zero_gravity_kd:=", gkd,
                 " gravity_ramp_time:=", gramp,
                 " gravity_params_path:=", gpath,
+                " gravity_trim:=", gtrim,
             ]
         ),
         value_type=str,
@@ -146,6 +148,10 @@ def generate_launch_description():
                         "表现为偶发 4~6 ms 的 read/write 卡顿。"
                         "零重力拖拽建议 125，对 8 ms 的力矩刷新完全够用"),
         DeclareLaunchArgument("zero_gravity_kd", default_value="1.0"),
+        DeclareLaunchArgument(
+            "gravity_trim", default_value="0 0 0 0 0 0",
+            description="恒定力矩偏置修正 N·m，逐轴。抵消电流零点温漂/线缆张力等"
+                        "随运行状态漂移的量（辨识拟合不进去）。例如 '0 0.3 -0.55 0 0 0'"),
         DeclareLaunchArgument("gravity_ramp_time", default_value="3.0",
                               description="激活后重力从 0 升到满额的时间 s"),
             DeclareLaunchArgument("rviz", default_value="true"),

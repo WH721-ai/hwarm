@@ -12,6 +12,7 @@
   <depend>rclcpp</depend>
   <depend>hardware_interface</depend>
   <depend>pluginlib</depend>
+  <depend>std_srvs</depend>
   <depend>openarm_can</depend>
   <depend>hw_arm_algorithms</depend>
 

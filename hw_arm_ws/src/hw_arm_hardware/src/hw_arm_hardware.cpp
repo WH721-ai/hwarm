@@ -678,6 +678,28 @@ CallbackReturn HwArmHW::on_activate(const rclcpp_lifecycle::State& /*prev*/) {
 
   if (return_to_zero_) {
     return_to_zero();
+  }
+
+  // ── 运行时切换零重力的服务
+  //   用法：
+  //     ros2 service call /hw_arm_hardware_interface/set_zero_gravity \
+  //         std_srvs/srv/SetBool "{data: true}"    # 进入
+  //         ... "{data: false}"                    # 退出
+  if (!zero_g_srv_ && get_node()) {
+    zero_g_srv_ = get_node()->create_service<std_srvs::srv::SetBool>(
+        "~/set_zero_gravity",
+        [this](const std::shared_ptr<std_srvs::srv::SetBool::Request> req,
+               std::shared_ptr<std_srvs::srv::SetBool::Response> res) {
+          // 切换前把位置命令对齐到当前位形：退出时机械臂停在原地不会弹回去
+          for (size_t j = 0; j < ARM_DOF; ++j) pos_commands_[j] = pos_states_[j];
+          zero_gravity_srv_mode_ = req->data;
+          RCLCPP_WARN(logger(), "★ %s零重力（kp %s）",
+                      req->data ? "进入" : "退出",
+                      req->data ? "→ 0，只靠 tau_ff 支撑"
+                                : "恢复，位置环重新接管当前位形");
+          res->success = true;
+          res->message = req->data ? "zero-gravity ON" : "zero-gravity OFF";
+        });
   } else {
     // 不自动回零时，把当前位姿作为初始命令，避免一上电就往 0 冲
     for (size_t i = 0; i < ARM_DOF; ++i) {
@@ -854,8 +876,9 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
     const double tau_cmd = tau_commands_[j] +
                            (apply_gravity ? gravity_tau_[j] : 0.0);
     // 零重力模式：kp 恒 0（位置命令失效），只留速度阻尼 + 重力前馈
-    const double kp_use = zero_gravity_ ? 0.0 : kp_[j];
-    double kd_use = zero_gravity_ ? zero_gravity_kd_ : kd_[j];
+    const bool zg_now = (zero_gravity_ || zero_gravity_srv_mode_);
+    const double kp_use = zg_now ? 0.0 : kp_[j];
+    double kd_use = zg_now ? zero_gravity_kd_ : kd_[j];
     // ── 零重力速度守护
     //  某一轴转得比 zero_gravity_vel_limit_ 快，多半是重力前馈不够、机械臂在往下溜。
     //  **不能直接去激活**（那会自由落体），而是把 kd 放大当刹车并节流报警。

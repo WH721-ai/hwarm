@@ -9,6 +9,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(OpenArmCAN REQUIRED)
 find_package(hw_arm_algorithms REQUIRED)
 
@@ -21,6 +22,7 @@ target_link_libraries(hw_arm_hardware PUBLIC
   rclcpp::rclcpp
   hardware_interface::hardware_interface
   pluginlib::pluginlib
+  std_srvs::std_srvs
   OpenArmCAN::openarm_can)
 
 pluginlib_export_plugin_description_file(hardware_interface hw_arm_hardware.xml)

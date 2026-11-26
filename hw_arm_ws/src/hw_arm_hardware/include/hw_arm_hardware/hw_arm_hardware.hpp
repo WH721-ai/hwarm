@@ -15,6 +15,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <rclcpp/rclcpp.hpp>
+#include <std_srvs/srv/set_bool.hpp>
 
 #include <openarm/can/socket/openarm.hpp>
 #include <openarm/damiao_motor/dm_motor_constants.hpp>
@@ -193,6 +195,19 @@ class HwArmHW : public hardware_interface::SystemInterface {
   //     tau_ff = ramp × (gravity_scale × g(q) + trim)
   // trim 的单位是 N·m，逐轴。
   std::vector<double> gravity_trim_ = {0, 0, 0, 0, 0, 0};
+
+  // ── 运行时切换零重力（~/set_zero_gravity，std_srvs/SetBool）
+  //
+  // 为什么必须能运行时进出（2026-11-26 实测）：
+  //   零重力启动点默认在 q≈0（return_to_zero），但零位是**机械结构托住**的。
+  //   在零位附近测到的 joint3 力矩比模型低 0.5~4.6 N·m（模型高估），
+  //   一离开结构支撑，多出来的力就把机械臂往上推 —— 实测"往上飘"就是这个。
+  //   正确做法：**先位置控制走到自由位形，再切零重力**。
+  //
+  // 切换是瞬间的（不做渐变），因为位置控制下稳态误差 e=(g−tau_ff)/kp，
+  // 若 tau_ff≈g 则 e≈0，切 kp→0 时机械臂几乎不动（误差 0.65° 量级）。
+  bool zero_gravity_srv_mode_ = false;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr zero_g_srv_;
   // direction 参数写成 " +1 -1 -1 +1 +1 +1 " 时的缓存（懒解析）
   std::vector<std::string> direction_vec_;
 

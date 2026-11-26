@@ -42,6 +42,65 @@ bash ~/hw_arm/hw_arm_ws/src/hw_arm_description/scripts/preflight.sh   # 五项�
 
 ---
 
+## 0b. 零位是"机械结构托住"的位形 —— 所以**不能在零位验证模型**
+
+用户确认：**q=0（所有关节 0°）时 joint2 / joint3 由机械臂自身结构托住**，
+电机只需要 < 0.01 N·m 就能保持。实测证据：
+
+```
+纯 kp=70 位置控制、重力补偿关、使能 15 秒
+    q 一个数都没变，effort ≈ 0.05（量化台阶 0.034）
+    ⇒ 电机承担 < kp×1e-4 = 0.007 N·m，而模型说该有 2.42 / 6.06 N·m
+```
+
+**这带来两个结论：**
+
+| 结论 | 含义 |
+|---|---|
+| ✅ **零位很安全** | 即使 tau_ff 算错，结构也挡着，机械臂不会掉 |
+| ❌ **零位验证不了模型** | 结构分走了 99.7% 的负载，effort 测的是"残余"，不是重力 |
+
+**而且 C-05 的辨识范围是 `q2 ∈ [24°, 90°]`、`q3 ∈ [14°, 124°]`，
+零位（q2≈0、q3≈0）根本在范围之外，属于外推区。**
+
+### 正确的验证地点：**训练范围里面**
+
+用 `gravity_verify.py`：
+
+```bash
+source ~/hw_arm/hw_arm_ws/src/hw_arm_description/scripts/env.sh
+
+# 先干跑看看会走哪些位形
+python3 ~/hw_arm/hw_arm_ws/src/hw_arm_description/scripts/gravity_verify.py --dry-run
+
+# 真正验证（6 个位形，每个走 3 s + 等静止）
+python3 ~/hw_arm/hw_arm_ws/src/hw_arm_description/scripts/gravity_verify.py --poses 6 --tol 0.4
+```
+
+它会：挑 6 个已采位形 → 逐个走过去 → 等静止 → 读 effort →
+**自己用 Pinocchio + θ̂ 独立算一遍 g(q)**（顺带交叉验证 C++ 实现）→ 打印每轴残差。
+
+**通过标准：每轴 |残差| ≤ 0.4 N·m。**
+
+### 关于"开机自动回零"
+
+`return_to_zero:=true` **已经实现**（`hw_arm_hardware.cpp:873`，默认关）：
+
+```bash
+ros2 launch hw_arm_bringup hw_arm.launch.py ... return_to_zero:=true
+```
+
+**它解决的是"起始姿态确定"，不解决"模型准不准"** ——
+因为零位恰恰是测不到重力的位形。
+
+**但它有另一个重要价值：** 零位是结构托住的**安全位形**。
+上电先回零 → 确认机械臂正常 → 再用位置控制走到训练范围内验证/示教。
+
+⚠️ 回零用 `kp_`/`kd_` + `tau=0` 插值 100 步，重力会让它滞后，
+到不了严格的 0°（会差 g/kp ≈ 2°）。要精确回零得靠外部控制器。
+
+---
+
 ## 1. 三个模式的区别（**别搞混**）
 
 | 模式 | kp | tau_ff | 手感 |

@@ -640,7 +640,7 @@ CallbackReturn HwArmHW::on_activate(const rclcpp_lifecycle::State& /*prev*/) {
         const auto& st = openarm_->get_arm().get_link_stats(static_cast<int>(k));
         const int err = ms[k].get_error_code();
         ok = st.ever_responded() &&
-             !st.is_stale(std::chrono::milliseconds(stale_timeout_ms_)) &&
+             !st.is_stale(std::chrono::milliseconds(stale_warn_ms_)) &&
              (err < 0x8);
       }
       axis_ok[k] = ok;
@@ -821,22 +821,24 @@ return_type HwArmHW::read(const rclcpp::Time& /*time*/, const rclcpp::Duration& 
 
   const auto& motors = openarm_->get_arm().get_motors();
   bool any_stale = false;
+  state_stale_any_ = false;   // 每周期重新判定
   for (size_t k = 0; k < active_idx_.size(); ++k) {
     const size_t j = active_idx_[k];
     const bool has = (k < motors.size());
     const bool stale =
         !has || openarm_->get_arm()
                     .get_link_stats(static_cast<int>(k))
-                    .is_stale(std::chrono::milliseconds(stale_timeout_ms_));
+                    .is_stale(std::chrono::milliseconds(stale_warn_ms_));
 
     if (stale) {
+      state_stale_any_ = true;
       any_stale = true;
       if (!axis_stale_latched_[k]) {
         axis_stale_latched_[k] = true;
         RCLCPP_ERROR(logger(),
                      "%s 反馈过期（>%ld ms 没有新的状态帧）。"
                      "该轴的 pos/vel/tau 状态不再可信。",
-                     joint_names_[j].c_str(), (long)stale_timeout_ms_);
+                     joint_names_[j].c_str(), (long)stale_warn_ms_);
       }
       continue;  // 不更新该轴状态，保留旧值仅供观察，但整体会返回 ERROR
     }
@@ -947,8 +949,16 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
     // 关节坐标系 → 电机坐标系（C-02）
     // kp/kd 不乘 direction（增益是正定的）；位置/速度/力矩都要乘。
     const double d = direction_[j];
-    const double tau_cmd = tau_commands_[j] +
-                           (apply_gravity ? gravity_tau_[j] : 0.0);
+    // ⚠️ 状态不可信时**必须切断重力前馈**（2026-11-26 事故）
+    //    g(q) 用的是冻结的 q，而机械臂可能已经在动 —— 前馈越算越错，
+    //    形成正反馈把手臂甩出去（现场"往上飘拉不住"，只能断电）。
+    //    宁可按"掉下来"处理，也不要按"甩出去"处理。
+    const bool ff_ok = apply_gravity && !state_stale_any_;
+    if (!ff_ok && apply_gravity) {
+      RCLCPP_WARN_THROTTLE(logger(), throttle_clock(), 1000,
+                           "状态不可信，已切断重力前馈（宁掉不甩）");
+    }
+    const double tau_cmd = tau_commands_[j] + (ff_ok ? gravity_tau_[j] : 0.0);
     // 零重力模式：kp 恒 0（位置命令失效），只留速度阻尼 + 重力前馈
     // G04：统一用实际模式（含服务进入的），速度守护也用这个
     const bool zg_now = (zero_gravity_ || zero_gravity_srv_mode_);

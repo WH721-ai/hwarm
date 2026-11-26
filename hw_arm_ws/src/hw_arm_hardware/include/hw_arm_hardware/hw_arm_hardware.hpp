@@ -149,7 +149,27 @@ class HwArmHW : public hardware_interface::SystemInterface {
   //
   // 阈值取 200 ms：250 Hz 下相当于 50 个周期没回包，
   // 远大于正常抖动（实测丢帧 10~20% 也能在这个窗口内补上）。
-  int64_t stale_timeout_ms_ = 200;
+  // 反馈过期的两级阈值（2026-11-26 改）
+  //
+  // 原来只有一级 200 ms，一到就 return ERROR → ros2_control 去激活硬件
+  // → on_deactivate → disable_all() → **电机失能**。
+  // 在位置控制下这只是"僵住"；在**零重力下就是自由落体**。
+  //
+  // 现场实测：这台机器的 USB-CAN 会偶发 10~20 ms 的写阻塞，控制环能跑到 47 ms，
+  // 200 ms 只相当于 4 个周期，一次抖动就会误判成断线。
+  //
+  // 现在改成两级：
+  //   > stale_warn_ms_  只告警，继续用最后有效命令输出（tau_ff 照发），
+  //                     总线恢复就自动回到正常 —— 这才是临时抖动该有的处理
+  //   > stale_fatal_ms_ 才判死，去激活硬件
+  int64_t stale_warn_ms_ = 200;
+  int64_t stale_fatal_ms_ = 800;
+  bool axis_stale_fatal_ = false;
+  // 任一轴反馈过期（超过 stale_warn_ms_）→ 状态不可信。
+  // 此时**必须切断重力前馈**：g(q) 用的是冻结的 q，
+  // 而机械臂可能已经在动 —— 前馈会越来越错，形成正反馈把手臂甩出去。
+  // 2026-11-26 现场就是这么"往上飘拉不住"的，只能断电。
+  bool state_stale_any_ = false;
   std::vector<bool> axis_stale_latched_;   // 每轴一个，避免刷屏
 
 

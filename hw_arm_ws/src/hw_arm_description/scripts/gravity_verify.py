@@ -219,6 +219,8 @@ def main():
                     help="验证完回到起始位形（默认开）")
     ap.add_argument("--no-return-home", dest="return_home", action="store_false",
                     help="验证完停在最后一个位形")
+    ap.add_argument("--save", default="",
+                    help="把这次测到的样本写成 YAML（可并入辨识数据集重拟合）")
     args = ap.parse_args()
 
     if not args.urdf or not os.path.isfile(args.urdf):
@@ -290,6 +292,25 @@ def main():
         if not rows:
             print("❌ 一个位形都没测成")
             return 1
+
+        # 可选：把这次的实测存成样本，供 gravity_id_cli 合并使用
+        if args.save:
+            try:
+                import yaml as _yaml
+                out = [{"q": [float(x) for x in q], "tau": [float(x) for x in tau],
+                        "tag": "A"} for _, q, tau, _, _ in rows]
+                os.makedirs(os.path.dirname(os.path.abspath(args.save)), exist_ok=True)
+                with open(args.save, "w") as f:
+                    _yaml.safe_dump({"samples": out,
+                                     "meta": {"urdf": args.urdf, "n": len(out),
+                                              "source": "gravity_verify dither-averaged",
+                                              "bidirectional": False}},
+                                    f, allow_unicode=True, sort_keys=False)
+                print(f"\n  已写出 {len(out)} 个样本 → {args.save}")
+                print("  提示：这些标了 tag=A（单向），并入辨识时库仑摩擦列会用不上，"
+                      "但不影响重力参数拟合")
+            except Exception as e:
+                print(f"  ⚠️ 写盘失败: {e}")
 
         R = np.array([r[4] for r in rows])
         print("══ 汇总 ══")

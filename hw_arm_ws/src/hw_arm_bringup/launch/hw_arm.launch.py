@@ -54,6 +54,7 @@ def launch_setup(context, *args, **kwargs):
     gpath = LaunchConfiguration("gravity_params_path").perform(context)
     update_rate = int(LaunchConfiguration("update_rate").perform(context))
     gtrim = LaunchConfiguration("gravity_trim").perform(context)
+    rtz = LaunchConfiguration("return_to_zero").perform(context)
 
     robot_description = ParameterValue(
         Command(
@@ -74,6 +75,7 @@ def launch_setup(context, *args, **kwargs):
                 #    "0 0 0 0 0 0" 拆成 6 个参数，报
                 #    "expected exactly one input file as argument"
                 " gravity_trim:='", gtrim, "'",
+                " return_to_zero:=", rtz,
             ]
         ),
         value_type=str,
@@ -155,6 +157,10 @@ def generate_launch_description():
             "gravity_trim", default_value="0 0 0 0 0 0",
             description="恒定力矩偏置修正 N·m，逐轴。抵消电流零点温漂/线缆张力等"
                         "随运行状态漂移的量（辨识拟合不进去）。例如 '0 0.3 -0.55 0 0 0'"),
+        DeclareLaunchArgument(
+            "return_to_zero", default_value="true",
+            description="上电自动回零。位置控制下是安全位形；"
+                        "但零重力调试时**必须关掉**，因为零位是结构托住、补偿误差最大的地方"),
         DeclareLaunchArgument("gravity_ramp_time", default_value="3.0",
                               description="激活后重力从 0 升到满额的时间 s"),
             DeclareLaunchArgument("rviz", default_value="true"),

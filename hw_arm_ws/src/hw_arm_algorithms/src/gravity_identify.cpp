@@ -243,6 +243,48 @@ GravityIdResult identifyGravity(const RobotModel& model, RobotWorkspace& ws,
   } else {
     x = AB.colPivHouseholderQr().solve(b);           // rank 很小，QR 足够
   }
+  // ── Huber-IRLS 稳健回归（2026-11-28）
+  //
+  // 初值来自上面的 LS/正则解。之后用 MAD 估尺度、按 Huber 降权离群点、反复重解。
+  // 离群点主要来自静摩擦迟滞 —— 实测同一自由位形三次测 joint3 得到
+  // 5.969 / 6.284 / 5.682（散布 0.6 N·m = 10%），这类点会把普通 OLS 拖偏。
+  // 参考：txk1228/arm-param-identification 报告 OLS inlier RMSE 0.24，
+  //       Huber 稳健 WLS 0.05。
+  if (opt.robust) {
+    Eigen::VectorXd w = Eigen::VectorXd::Ones(A.rows());
+    for (int it = 0; it < std::max(1, opt.huber_iters); ++it) {
+      const Eigen::VectorXd r = A * (B * x) - b;
+      std::vector<double> absr(static_cast<size_t>(r.size()));
+      for (Eigen::Index i = 0; i < r.size(); ++i) absr[static_cast<size_t>(i)] = std::abs(r[i]);
+      std::vector<double> tmp = absr;
+      const size_t mid = tmp.size() / 2;
+      std::nth_element(tmp.begin(), tmp.begin() + static_cast<long>(mid), tmp.end());
+      double sigma = 1.4826 * tmp[mid];
+      if (!(sigma > 1e-9)) sigma = 1e-9;
+      const double thresh = opt.huber_k * sigma;
+      for (Eigen::Index i = 0; i < r.size(); ++i) {
+        const double a = std::abs(r[i]);
+        w[i] = (a <= thresh) ? 1.0 : (thresh / a);
+      }
+      Eigen::MatrixXd Aw = A;
+      Eigen::VectorXd bw = b;
+      for (Eigen::Index i = 0; i < A.rows(); ++i) {
+        const double sw = std::sqrt(w[i]);
+        Aw.row(i) *= sw;
+        bw[i] *= sw;
+      }
+      const Eigen::MatrixXd ABw = Aw * B;
+      x = ABw.colPivHouseholderQr().solve(bw);
+    }
+    const Eigen::VectorXd r_fin = A * (B * x) - b;
+    double ss_in = 0.0; int n_in = 0;
+    for (Eigen::Index i = 0; i < r_fin.size(); ++i) {
+      if (w[i] >= 1.0 - 1e-12) { ss_in += r_fin[i] * r_fin[i]; ++n_in; }
+    }
+    out.inlier_rms = n_in > 0 ? std::sqrt(ss_in / static_cast<double>(n_in)) : 0.0;
+    out.n_outliers = static_cast<int>(r_fin.size()) - n_in;
+  }
+
   const Eigen::VectorXd x_full = B * x;
   out.theta = x_full.head(np);
   if (np_add > 0) {

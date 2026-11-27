@@ -41,7 +41,7 @@ void usage() {
       "  --holdout <n>      每 n 个留一个做验证（0=不验证，默认 4）\n"
       "  --rank-tol <x>     可辨识子空间奇异值阈值（默认 1e-6）\n"
       "  --min-n <n>        最少样本数（默认 20）\n"
-      "  --accept-rms <x>   残差 RMS 门槛，超过则退出码 4（默认 0.5 N·m）\n");
+      "  --accept-rms <x>   残差 RMS 门槛，超过则退出码 4（默认 0.5 N·m）\n  --robust           Huber-IRLS 稳健回归（抗离群点）\n  --huber-iters <n>  稳健迭代次数（默认 4）\n");
 }
 
 bool parseSamples(const std::string& path,
@@ -84,6 +84,8 @@ int main(int argc, char** argv) {
   double accept_rms = 0.5;
   double ridge = 0.0;        // >0 时打开 Tikhonov 正则（往 URDF 标称参数拉）
   bool ridge_set = false;
+  bool robust = false;
+  int huber_iters = 4;
 
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -96,6 +98,8 @@ int main(int argc, char** argv) {
     else if (a == "--rank-tol") rank_tol = std::atof(next().c_str());
     else if (a == "--min-n") min_n = std::atoi(next().c_str());
     else if (a == "--accept-rms") accept_rms = std::atof(next().c_str());
+    else if (a == "--robust") robust = true;
+    else if (a == "--huber-iters") huber_iters = std::atoi(next().c_str());
     else if (a == "-h" || a == "--help") { usage(); return 0; }
     else { std::fprintf(stderr, "未知参数: %s\n", a.c_str()); usage(); return 2; }
   }
@@ -127,6 +131,8 @@ int main(int argc, char** argv) {
     opt.regularize = true;      // 往 URDF 标称参数拉，改善留出误差
     opt.ridge_ratio = ridge;
   }
+  opt.robust = robust;
+  opt.huber_iters = huber_iters;
 
   const auto r = hw_arm_algorithms::identifyGravity(model, ws, samples, opt);
 
@@ -152,6 +158,10 @@ int main(int argc, char** argv) {
     std::printf("]\n");
     if (r.holdout_ok) {
       std::printf("holdout_rms: %.6f\n", r.holdout_rms);
+      if (robust) {
+        std::printf("inlier_rms: %.6f\n", r.inlier_rms);
+        std::printf("n_outliers: %d\n", r.n_outliers);
+      }
       std::printf("holdout_max: %.6f\n", r.holdout_max);
     } else {
       std::printf("holdout_rms: nan\n");

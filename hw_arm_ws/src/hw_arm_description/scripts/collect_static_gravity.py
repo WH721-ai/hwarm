@@ -147,6 +147,33 @@ def order_by_nearest(poses: list[np.ndarray], start: np.ndarray) -> list[np.ndar
     return out
 
 
+def load_poses_file(path: str) -> list[np.ndarray]:
+    """从 YAML 读取位形表（单位：度）
+
+    文件格式：
+        poses:
+          - {q: [q1, q2, q3, q4, q5, q6]}     # 度
+          - ...
+
+    为什么要这个（2026-11-28）：
+        随机生成的位形集，回归矩阵条件数 582（σ_min 0.289），
+        最弱方向被噪声放大 582 倍。用离线 D-最优选出的 27 个位形，
+        条件数降到 245（σ_min 0.659），同噪声下参数误差约降 2.4 倍。
+    """
+    import yaml
+    root = yaml.safe_load(open(path, encoding="utf-8"))
+    arr = root.get("poses") if isinstance(root, dict) else None
+    if not arr:
+        raise SystemExit(f"{path} 里没有 poses 序列")
+    out = []
+    for i, n in enumerate(arr):
+        q = n.get("q") if isinstance(n, dict) else n
+        if q is None or len(q) != 6:
+            raise SystemExit(f"{path} 第 {i+1} 条不是 6 自由度位形")
+        out.append(np.radians(np.asarray(q, dtype=float)))
+    return out
+
+
 def plan_poses(n_main: int, seed: int) -> list[np.ndarray]:
     """规划采集位形
 
@@ -503,6 +530,8 @@ def main() -> int:
                     help="标称 URDF（用于力矩预判；默认自动找 hw_arm_description）")
     ap.add_argument("--out", default="static_gravity.yaml")
     ap.add_argument("--poses", type=int, default=24, help="位形数（默认 24）")
+    ap.add_argument("--pose-file", default=None,
+                    help="从 YAML 读位形表（度），覆盖 --poses/--seed 的随机生成")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--move-time", type=float, default=4.0,
                     help="每段运动时间 s（默认 4.0；原来是 2.0 = 速度减半）")
@@ -562,7 +591,11 @@ def main() -> int:
         except Exception:
             pass
 
-    poses = plan_poses(args.poses, args.seed)
+    if args.pose_file:
+        poses = load_poses_file(args.pose_file)
+        print(f"从 {args.pose_file} 读入 {len(poses)} 个位形（度→弧度已转换）")
+    else:
+        poses = plan_poses(args.poses, args.seed)
 
     # ── 力矩预判 ──
     urdf = args.urdf

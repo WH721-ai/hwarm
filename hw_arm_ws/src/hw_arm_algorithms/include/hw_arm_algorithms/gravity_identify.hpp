@@ -86,6 +86,25 @@ struct GravityIdOptions {
   /// 真机数据上用 CLI 的 --ridge 打开做对比。
   bool regularize = false;
   double ridge_ratio = 1e-2;
+
+  /// Huber-IRLS 稳健回归（2026-11-28 加）
+  ///
+  /// 为什么需要：
+  ///   开源的 arm-param-identification（txk1228）报告 —— 同一批数据
+  ///     · 普通 OLS          inlier RMSE ≈ 0.24 N·m
+  ///     · Huber / 稳健 WLS  inlier RMSE ≈ 0.05 N·m   （好 5 倍）
+  ///   差别全在离群点上。实测本臂同一自由位形三次测 τ3 得到
+  ///   5.969 / 6.284 / 5.682（散布 0.6 N·m = 10%），这类点会把 OLS 拖偏。
+  ///
+  /// 做法：
+  ///   ① 先做一次普通 LS 得到初值
+  ///   ② 用 MAD 估稳健尺度 σ̂ = 1.4826 · median(|r − median(r)|)
+  ///   ③ 权重 w_i = 1 (|r_i| ≤ k·σ̂) 或 k·σ̂/|r_i|（Huber，k 默认 1.345）
+  ///   ④ 加权重解，迭代 huber_iters 次
+  ///   ⑤ 同时报告 inlier_rms（只用权重=1 的点算）和离群点数
+  bool robust = false;
+  int huber_iters = 4;
+  double huber_k = 1.345;
 };
 
 struct GravityIdResult {
@@ -106,6 +125,10 @@ struct GravityIdResult {
   bool holdout_ok = false;
   double holdout_rms = 0.0;       ///< 留出集上的 RMS —— 这才是"泛化精度"
   double holdout_max = 0.0;
+
+  /// 稳健回归诊断
+  double inlier_rms = 0.0;    ///< 只用"未被降权"的点算的 RMS
+  int n_outliers = 0;         ///< 被降权的点数（|r| > k·σ̂）
 
   std::string message;
 };

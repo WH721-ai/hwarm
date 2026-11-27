@@ -964,6 +964,7 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
         const double ff = gscale * g[static_cast<Eigen::Index>(i)] +
                           tau_scale * gravity_trim_[i];
         gravity_tau_[i] = std::clamp(ff, -tau_limit_[i], tau_limit_[i]);
+        gravity_g_diag_[i] = g[static_cast<Eigen::Index>(i)];
       }
 
     if (gravity_dry_run_) {
@@ -984,12 +985,31 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
     //    g(q) 用的是冻结的 q，而机械臂可能已经在动 —— 前馈越算越错，
     //    形成正反馈把手臂甩出去（现场"往上飘拉不住"，只能断电）。
     //    宁可按"掉下来"处理，也不要按"甩出去"处理。
+    const bool zg_now_diag = (zero_gravity_ || zero_gravity_srv_mode_);
     const bool ff_ok = apply_gravity && !state_stale_any_ && !fault_latched_;
     if (!ff_ok && apply_gravity) {
       RCLCPP_WARN_THROTTLE(logger(), throttle_clock(), 1000,
                            "状态不可信，已切断重力前馈（宁掉不甩）");
     }
     const double tau_cmd = tau_commands_[j] + (ff_ok ? gravity_tau_[j] : 0.0);
+
+    // ── 零重力下的逐轴诊断（2026-11-27 加）
+    //   现场现象：joint2 往上顶、joint4/5/6 像没补偿往下掉。
+    //   要判断到底是"没发出去"还是"发了但不够"，必须看到实际下发的值。
+    if (zg_now_diag && j == 0) {
+      RCLCPP_INFO_THROTTLE(logger(), throttle_clock(), 1000,
+          "[零重力诊断] ff_ok=%d tau_scale=%.2f kp_scale=%.2f | "
+          "g=[%.3f %.3f %.3f %.3f %.3f %.3f] "
+          "trim=[%.2f %.2f %.2f %.2f %.2f %.2f] "
+          "tau_ff=[%.3f %.3f %.3f %.3f %.3f %.3f]",
+          ff_ok ? 1 : 0, tau_scale_, kp_scale_,
+          gravity_g_diag_[0], gravity_g_diag_[1], gravity_g_diag_[2],
+          gravity_g_diag_[3], gravity_g_diag_[4], gravity_g_diag_[5],
+          gravity_trim_[0], gravity_trim_[1], gravity_trim_[2],
+          gravity_trim_[3], gravity_trim_[4], gravity_trim_[5],
+          gravity_tau_[0], gravity_tau_[1], gravity_tau_[2],
+          gravity_tau_[3], gravity_tau_[4], gravity_tau_[5]);
+    }
     // 零重力模式：kp 恒 0（位置命令失效），只留速度阻尼 + 重力前馈
     // G04：统一用实际模式（含服务进入的），速度守护也用这个
     const bool zg_now = (zero_gravity_ || zero_gravity_srv_mode_);

@@ -179,6 +179,9 @@ class HwArmHW : public hardware_interface::SystemInterface {
 
   // 已建立的过渡系数（0=无前馈/满刚度，1=满前馈/零刚度）。
   // 不再每次从时间戳重算，而是按速率向目标逼近。
+  // 诊断用：把本周期算出的 g(q) 缓存下来，便于日志里对照 trim
+  double gravity_g_diag_[6] = {0, 0, 0, 0, 0, 0};
+
   double tau_scale_ = 0.0;
   double kp_scale_ = 1.0;
   std::vector<bool> axis_stale_latched_;   // 每轴一个，避免刷屏

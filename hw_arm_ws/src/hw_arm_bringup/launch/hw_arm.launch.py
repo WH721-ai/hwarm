@@ -71,8 +71,11 @@ def launch_setup(context, *args, **kwargs):
                 " zero_gravity:=", zg,
                 " gravity_scale:=", gscale,
                 " zero_gravity_kd:=", gkd,
-                " zero_gravity_kp_floor:=", gkpf,
-                " zero_gravity_kd_each:=", gkde,
+                # ⚠️ 这三个值都可能是"6 个空格分隔的数"，必须加引号
+                #    否则 xacro 会被拆成多个参数，报
+                #    "expected exactly one input file as argument"
+                " zero_gravity_kp_floor:='", gkpf, "'",
+                " zero_gravity_kd_each:='", gkde, "'",
                 " gravity_ramp_time:=", gramp,
                 " gravity_params_path:=", gpath,
                 # ⚠️ 值里有空格，必须加引号 —— 否则 xacro 会把

@@ -226,6 +226,15 @@ class HwArmHW : public hardware_interface::SystemInterface {
   std::vector<double> tau_limit_ = {120.0, 45.0, 28.0, 10.0, 7.0, 7.0};
   double zero_gravity_vel_limit_ = 2.0;      // rad/s
   bool zero_gravity_allow_low_pose_ = false;  // 允许 |q2|<10 或 |q3|<15 进零重力
+
+  // 零重力下的 kp 下限（2026-11-28 加）
+  //
+  // kp=0 时系统只剩 "tau_ff == 真实负载" 这一个平衡条件，模型误差直接变成漂移
+  // v = τ_err/kd。实测 joint3 在 q3>120° 或 |q5|>40° 的模型误差可达 0.5~1.0 N·m，
+  // 即使 kd 顶到 MIT 协议上限 5 也只能压到 8.6 °/s。
+  // 保留一点点 kp 相当于"软回中"：偏 10° 才 0.87 N·m（kp_floor=5），
+  // 足以和残余抗衡，但推起来仍然很轻。
+  double zero_gravity_kp_floor_ = 0.0;   ///< 0 = 完全失重；>0 = 软回中
   // 速度守护的滞回与速率限制（2026-11-28）
   //   旧实现：|v|>limit 时 kd 一帧从 3.0 跳到 5.0，v 在阈值附近穿越时
   //   每 8 ms 反复切换 -> 极限环抖振。joint6 惯量仅 3e-4，5.94 N·m 的

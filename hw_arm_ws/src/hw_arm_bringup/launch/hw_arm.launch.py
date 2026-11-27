@@ -50,6 +50,7 @@ def launch_setup(context, *args, **kwargs):
     zg = LaunchConfiguration("zero_gravity").perform(context)
     gscale = LaunchConfiguration("gravity_scale").perform(context)
     gkd = LaunchConfiguration("zero_gravity_kd").perform(context)
+    gkpf = LaunchConfiguration("zero_gravity_kp_floor").perform(context)
     gramp = LaunchConfiguration("gravity_ramp_time").perform(context)
     gpath = LaunchConfiguration("gravity_params_path").perform(context)
     update_rate = int(LaunchConfiguration("update_rate").perform(context))
@@ -69,6 +70,7 @@ def launch_setup(context, *args, **kwargs):
                 " zero_gravity:=", zg,
                 " gravity_scale:=", gscale,
                 " zero_gravity_kd:=", gkd,
+                " zero_gravity_kp_floor:=", gkpf,
                 " gravity_ramp_time:=", gramp,
                 " gravity_params_path:=", gpath,
                 # ⚠️ 值里有空格，必须加引号 —— 否则 xacro 会把
@@ -153,6 +155,7 @@ def generate_launch_description():
                         "表现为偶发 4~6 ms 的 read/write 卡顿。"
                         "零重力拖拽建议 125，对 8 ms 的力矩刷新完全够用"),
         DeclareLaunchArgument("zero_gravity_kd", default_value="1.0"),
+        DeclareLaunchArgument("zero_gravity_kp_floor", default_value="0.0"),
         DeclareLaunchArgument(
             "gravity_trim", default_value="0 0 0 0 0 0",
             description="恒定力矩偏置修正 N·m，逐轴。抵消电流零点温漂/线缆张力等"

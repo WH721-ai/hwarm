@@ -332,6 +332,20 @@ bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
     }
     zero_gravity_kd_ = v;
   }
+  if (!get("zero_gravity_kp_floor").empty()) {
+    double v = 0.0;
+    if (!parse_double("zero_gravity_kp_floor", get("zero_gravity_kp_floor"), v)) return false;
+    if (v < 0.0 || v > 50.0) {
+      RCLCPP_ERROR(logger(), "zero_gravity_kp_floor=%.2f 超出 [0, 50]", v);
+      return false;
+    }
+    zero_gravity_kp_floor_ = v;
+  }
+  if (!get("zero_gravity_allow_low_pose").empty()) {
+    const std::string s = get("zero_gravity_allow_low_pose");
+    zero_gravity_allow_low_pose_ = (s == "true" || s == "1" || s == "True");
+  }
+
   if (zero_gravity_) {
     // ══ 2026-11-26 实测后的结论：**开机就进零重力是不安全的** ══
     //
@@ -1038,7 +1052,9 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
     // G04：统一用实际模式（含服务进入的），速度守护也用这个
     const bool zg_now = (zero_gravity_ || zero_gravity_srv_mode_);
     // G02：kp 按 kp_scale 过渡（阶段 2 才降到 0），不是瞬间归零
-    const double kp_use = kp_scale * kp_[j];
+    // kp_use：过渡期从满 kp 线性降到 kp_floor（而不是 0）
+    //   kp_floor = 0 时行为与旧版完全一致（完全失重）
+    const double kp_use = kp_scale * kp_[j] + (1.0 - kp_scale) * zero_gravity_kp_floor_;
     double kd_use = zg_now ? (zero_gravity_kd_ * (1.0 - kp_scale) + kd_[j] * kp_scale)
                            : kd_[j];
     // ── 零重力速度守护（2026-11-28 重做：滞回 + 速率限制）

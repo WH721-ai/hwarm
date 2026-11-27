@@ -1036,11 +1036,13 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
     //   要判断到底是"没发出去"还是"发了但不够"，必须看到实际下发的值。
     if (zg_now_diag && j == 0) {
       RCLCPP_INFO_THROTTLE(logger(), throttle_clock(), 1000,
-          "[零重力诊断] ff_ok=%d tau_scale=%.2f kp_scale=%.2f | "
+          "[零重力诊断] ff_ok=%d tau_scale=%.2f kp_scale=%.2f kp_now=%.1f kp_floor=%.1f kd=%.2f | "
           "g=[%.3f %.3f %.3f %.3f %.3f %.3f] "
           "trim=[%.2f %.2f %.2f %.2f %.2f %.2f] "
           "tau_ff=[%.3f %.3f %.3f %.3f %.3f %.3f]",
           ff_ok ? 1 : 0, tau_scale_, kp_scale_,
+          kp_scale_ * kp_[0] + (1.0 - kp_scale_) * zero_gravity_kp_floor_,
+          zero_gravity_kp_floor_, zero_gravity_kd_,
           gravity_g_diag_[0], gravity_g_diag_[1], gravity_g_diag_[2],
           gravity_g_diag_[3], gravity_g_diag_[4], gravity_g_diag_[5],
           gravity_trim_[0], gravity_trim_[1], gravity_trim_[2],

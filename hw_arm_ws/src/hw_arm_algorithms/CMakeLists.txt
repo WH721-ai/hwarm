@@ -44,6 +44,9 @@ add_library(${PROJECT_NAME}
   src/collision_robot.cpp       # 自碰撞检测
   src/collision_world.cpp       # 桌面约束
   src/gravity_identify.cpp      # C-05 静态重力辨识（最小二乘 + 可辨识子空间）
+  src/cartesian_impedance.cpp   # 笛卡尔阻抗（τ = g + Jᵀ(Ke − Dv)）
+                                # 2026-11-28 发现：源文件存在但**从未被编进库**，
+                                # 所以这段代码一直没有被编译过，也没有任何测试
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -183,6 +186,11 @@ if(BUILD_TESTING)
            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test/test_ik_cli_collision.sh
                    $<TARGET_FILE:ik_cli> ${HW_ARM_TEST_URDF})
   # 碰撞检测
+  ament_add_gtest(test_cartesian_impedance test/test_cartesian_impedance.cpp)
+  target_link_libraries(test_cartesian_impedance ${PROJECT_NAME})
+  target_compile_definitions(test_cartesian_impedance PRIVATE
+    HW_ARM_TEST_URDF="${HW_ARM_TEST_URDF}")
+
   ament_add_gtest(test_collision test/test_collision.cpp)
   target_link_libraries(test_collision ${PROJECT_NAME})
   target_compile_definitions(test_collision PRIVATE

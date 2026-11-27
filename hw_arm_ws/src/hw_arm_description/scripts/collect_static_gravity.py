@@ -213,6 +213,48 @@ def plan_poses(n_main: int, seed: int) -> list[np.ndarray]:
     return poses
 
 
+def theta_gravity(q: np.ndarray, theta_yaml: str, urdf: str):
+    """用**辨识模型** θ̂ 估重力矩（安全预判）
+
+    为什么必须用 θ̂ 而不是标称 URDF（2026-11-28 实测）：
+      位形 q2=16.6°, q3=130.6°：
+          标称 URDF 预判 τ2 =  7.16 N·m   ← 采集脚本原来用这个
+          旧 θ̂ 预测      τ2 = 10.66
+          新 θ̂ 预测      τ2 = 12.98
+          **实测          τ2 = 10.99**
+      ⇒ 标称 URDF 低估 53%，把 11 N·m 的位形当成 7 N·m 放过去了。
+      ⇒ 用 θ̂ 做预判，安全边界的含义才成立（实测与 θ̂ 差 <0.5 N·m）。
+    """
+    import pinocchio as pin
+    import yaml
+    key = theta_yaml
+    if not hasattr(theta_gravity, "_cache"):
+        theta_gravity._cache = {}
+    if key not in theta_gravity._cache:
+        d = yaml.safe_load(open(theta_yaml, encoding="utf-8"))
+        theta = np.asarray(d["theta"], dtype=float)
+        offs = d.get("offsets") or []
+        m = pin.buildModelFromUrdf(urdf)
+        # 与 C++ 侧一致：g = Y(q)·θ + offsets
+        theta_gravity._cache[key] = (m, theta, np.asarray(offs, dtype=float) if len(offs) else np.zeros(m.nv))
+    m, theta, offs = theta_gravity._cache[key]
+    d = m.createData()
+    Y = pin.computeJointTorqueRegressor(m, d, np.asarray(q, dtype=float),
+                                        np.zeros(m.nv), np.zeros(m.nv))
+    np_ = 10 * (m.njoints - 1)
+    return np.asarray(Y)[:, :np_].dot(theta[:np_]) + offs
+
+
+def predict_gravity(q, urdf, pred_mass, theta_yaml=None):
+    """力矩预判的统一入口：优先辨识模型 θ̂，没有才退回标称 URDF"""
+    if theta_yaml:
+        try:
+            return theta_gravity(q, theta_yaml, urdf)
+        except Exception as e:  # noqa: BLE001
+            print(f"  ⚠️ θ̂ 预判失败（{e}），退回标称 URDF")
+    return nominal_gravity(q, urdf, pred_mass)
+
+
 def nominal_gravity(q: np.ndarray, urdf: str,
                     gripper_mass: float = 0.3185,
                     gripper_com=(0.00812, -0.00173, 0.04161)) -> np.ndarray | None:
@@ -530,6 +572,8 @@ def main() -> int:
                     help="标称 URDF（用于力矩预判；默认自动找 hw_arm_description）")
     ap.add_argument("--out", default="static_gravity.yaml")
     ap.add_argument("--poses", type=int, default=24, help="位形数（默认 24）")
+    ap.add_argument("--theta-yaml", default=None,
+                    help="用辨识模型 θ̂ 做力矩预判（强烈建议给；不给才退回标称 URDF）")
     ap.add_argument("--pose-file", default=None,
                     help="从 YAML 读位形表（度），覆盖 --poses/--seed 的随机生成")
     ap.add_argument("--seed", type=int, default=0)
@@ -683,7 +727,7 @@ def main() -> int:
     safe, skipped = [], []
     rows = []
     for i, q in enumerate(poses):
-        g = nominal_gravity(q, urdf, pred_mass) if urdf else None
+        g = predict_gravity(q, urdf, pred_mass, args.theta_yaml) if urdf else None
         ok, over_j, val = check_tau(g)
         ok_tab, zmin = check_table(q)
         ok = ok and ok_tab
@@ -736,7 +780,7 @@ def main() -> int:
         # 把"预测重力"函数挂到节点上（中止判据要按位形算，不能一刀切）
         if urdf:
             def _g(qq):
-                return nominal_gravity(qq, urdf, pred_mass)
+                return predict_gravity(qq, urdf, pred_mass, args.theta_yaml)
             node._gravity_fn = _g
 
         q_now = np.array(node.q)
@@ -763,7 +807,7 @@ def main() -> int:
                   f"j4={math.degrees(q_goal[3]):6.1f}°  j5={math.degrees(q_goal[4]):6.1f}°  "
                   f"j6={math.degrees(q_goal[5]):6.1f}°")
             # 力矩预判再显示一次（用于判断要不要托）
-            g_pre = nominal_gravity(q_goal, urdf, pred_mass)
+            g_pre = predict_gravity(q_goal, urdf, pred_mass, args.theta_yaml)
             if g_pre is not None:
                 print(f"   预判 τ = {np.round(g_pre, 2)}   （|τ_j2|={abs(g_pre[1]):.2f} N·m）")
 

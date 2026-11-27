@@ -35,7 +35,8 @@ C_OK="\033[32m"; C_WARN="\033[33m"; C_ERR="\033[31m"; C_DIM="\033[2m"; C_RST="\0
 PASS=0; FAIL=0; SKIP=0
 
 ok()   { printf "  ${C_OK}✅${C_RST} %s\n" "$*"; PASS=$((PASS+1)); }
-bad()  { printf "  ${C_ERR}❌${C_RST} %s\n" "$*"; FAIL=$((FAIL+1)); }
+FAILED_ITEMS=()
+bad()  { printf "  ${C_ERR}❌${C_RST} %s\n" "$*"; FAIL=$((FAIL+1)); FAILED_ITEMS+=("$*"); }
 warn() { printf "  ${C_WARN}⚠️${C_RST}  %s\n" "$*"; SKIP=$((SKIP+1)); }
 dim()  { printf "  ${C_DIM}%s${C_RST}\n" "$*"; }
 
@@ -310,7 +311,8 @@ do_verify() {
     dim "（需要 sudo 才能拿 SCHED_FIFO，下面会提示输密码）"
     if sudo -n true 2>/dev/null || [ -t 0 ]; then
       local out
-      out=$(sudo cyclictest -t1 -p 99 -i 1000 -D 30s -m -a 8 2>/dev/null | grep -E "^T:")
+      # -q = 退出时才打印汇总，避免每秒一行刷屏
+      out=$(sudo cyclictest -q -t1 -p 99 -i 1000 -D 30s -m -a 8 2>/dev/null | grep -E "^T:" | tail -1)
       if [ -n "$out" ]; then
         echo "  $out"
         local mx
@@ -350,6 +352,10 @@ do_verify() {
     echo " 期望：不再出现 'Could not enable FIFO RT scheduling policy'"
   else
     printf " ${C_ERR}❌ %d 项未通过${C_RST}（%d 通过，%d 提示）\n" "$FAIL" "$PASS" "$SKIP"
+    if [ "${#FAILED_ITEMS[@]}" -gt 0 ]; then
+      echo " 未通过项："
+      for it in "${FAILED_ITEMS[@]}"; do echo "   · $it"; done
+    fi
   fi
   echo "══════════════════════════════════════════════════"
   [ "$FAIL" -eq 0 ]

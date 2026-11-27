@@ -13,6 +13,7 @@
 #pragma once
 
 #include <memory>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -234,7 +235,11 @@ class HwArmHW : public hardware_interface::SystemInterface {
   // 即使 kd 顶到 MIT 协议上限 5 也只能压到 8.6 °/s。
   // 保留一点点 kp 相当于"软回中"：偏 10° 才 0.87 N·m（kp_floor=5），
   // 足以和残余抗衡，但推起来仍然很轻。
-  double zero_gravity_kp_floor_ = 0.0;   ///< 0 = 完全失重；>0 = 软回中
+  // 逐轴版本（2026-11-28 晚）：各轴惯量差三个数量级
+  //   M(j2)=0.346, M(j4)=0.0019, M(j6)=0.0003  —— 同一 kd 对腕部就是"锁死"
+  //   参数既接受单个值（广播到 6 轴），也接受空格分隔的 6 个值。
+  std::array<double, 6> zero_gravity_kp_floor_{{0, 0, 0, 0, 0, 0}};
+  std::array<double, 6> zero_gravity_kd_v_{{1, 1, 1, 1, 1, 1}};
   // 速度守护的滞回与速率限制（2026-11-28）
   //   旧实现：|v|>limit 时 kd 一帧从 3.0 跳到 5.0，v 在阈值附近穿越时
   //   每 8 ms 反复切换 -> 极限环抖振。joint6 惯量仅 3e-4，5.94 N·m 的

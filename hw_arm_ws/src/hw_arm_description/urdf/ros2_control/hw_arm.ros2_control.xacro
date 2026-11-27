@@ -55,6 +55,7 @@
                         gravity_scale:=1.0
                         zero_gravity_kd:=1.0
                         zero_gravity_kp_floor:=0.0
+                        zero_gravity_kd_each:=''
                         gravity_ramp_time:=3.0
                         gravity_trim:='0 0 0 0 0 0'
                         return_to_zero:=true
@@ -135,6 +136,9 @@
           <param name="zero_gravity">${zero_gravity}</param>
           <param name="zero_gravity_kd">${zero_gravity_kd}</param>
           <param name="zero_gravity_kp_floor">${zero_gravity_kp_floor}</param>
+          <xacro:if value="${zero_gravity_kd_each != ''}">
+            <param name="zero_gravity_kd_each">${zero_gravity_kd_each}</param>
+          </xacro:if>
           <param name="zero_gravity_vel_limit">2.0</param>
           <!-- CAN ID 映射：joint1..joint6 各自用哪个电机发送 ID（接收自动 +0x10）
                默认就是 1..6，不需要写。

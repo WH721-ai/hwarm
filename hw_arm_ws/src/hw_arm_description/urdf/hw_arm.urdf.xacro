@@ -36,6 +36,7 @@
   <xacro:arg name="gravity_scale" default="1.0" />
   <xacro:arg name="zero_gravity_kd" default="1.0" />
   <xacro:arg name="zero_gravity_kp_floor" default="0.0" />
+  <xacro:arg name="zero_gravity_kd_each" default="" />
   <xacro:arg name="gravity_ramp_time" default="3.0" />
   <xacro:arg name="gravity_trim" default="0 0 0 0 0 0" />
   <xacro:arg name="return_to_zero" default="true" />
@@ -87,6 +88,7 @@
     gravity_scale="$(arg gravity_scale)"
     zero_gravity_kd="$(arg zero_gravity_kd)"
     zero_gravity_kp_floor="$(arg zero_gravity_kp_floor)"
+    zero_gravity_kd_each="$(arg zero_gravity_kd_each)"
     gravity_ramp_time="$(arg gravity_ramp_time)"
     gravity_trim="$(arg gravity_trim)"
     return_to_zero="$(arg return_to_zero)"

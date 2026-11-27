@@ -70,6 +70,20 @@ bool parse_double(const std::string& key, const std::string& raw, double& out) {
   }
 }
 
+/// 解析"1 个或 N 个用空格分隔的数"
+bool parse_doubles(const std::string& key, const std::string& raw,
+                   std::vector<double>& out) {
+  out.clear();
+  std::istringstream is(raw);
+  double v;
+  while (is >> v) out.push_back(v);
+  if (out.empty()) {
+    RCLCPP_ERROR(rclcpp::get_logger("HwArmHW"), "%s 解析失败: '%s'", key.c_str(), raw.c_str());
+    return false;
+  }
+  return true;
+}
+
 // 硬故障：总线已经不可用，继续发帧没有意义
 bool hard_bus_fault(const openarm::canbus::BusStatus& s) {
   return s.bus_off || s.error_passive || s.write_net_down;
@@ -331,15 +345,39 @@ bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
       return false;
     }
     zero_gravity_kd_ = v;
+    zero_gravity_kd_v_.fill(v);
   }
-  if (!get("zero_gravity_kp_floor").empty()) {
-    double v = 0.0;
-    if (!parse_double("zero_gravity_kp_floor", get("zero_gravity_kp_floor"), v)) return false;
-    if (v < 0.0 || v > 50.0) {
-      RCLCPP_ERROR(logger(), "zero_gravity_kp_floor=%.2f 超出 [0, 50]", v);
+  if (!get("zero_gravity_kd_each").empty()) {
+    std::vector<double> v;
+    if (!parse_doubles("zero_gravity_kd_each", get("zero_gravity_kd_each"), v)) return false;
+    if (v.size() == 1) v.assign(ARM_DOF, v[0]);
+    if (v.size() != ARM_DOF) {
+      RCLCPP_ERROR(logger(), "zero_gravity_kd_each 需要 1 或 6 个值，给了 %zu", v.size());
       return false;
     }
-    zero_gravity_kp_floor_ = v;
+    for (size_t i = 0; i < ARM_DOF; ++i) {
+      if (v[i] < 0.0 || v[i] > 5.0) {
+        RCLCPP_ERROR(logger(), "zero_gravity_kd_each[%zu]=%.2f 超出 MIT 范围 [0,5]", i + 1, v[i]);
+        return false;
+      }
+      zero_gravity_kd_v_[i] = v[i];
+    }
+  }
+  if (!get("zero_gravity_kp_floor").empty()) {
+    std::vector<double> v;
+    if (!parse_doubles("zero_gravity_kp_floor", get("zero_gravity_kp_floor"), v)) return false;
+    if (v.size() == 1) v.assign(ARM_DOF, v[0]);
+    if (v.size() != ARM_DOF) {
+      RCLCPP_ERROR(logger(), "zero_gravity_kp_floor 需要 1 或 6 个值，给了 %zu", v.size());
+      return false;
+    }
+    for (size_t i = 0; i < ARM_DOF; ++i) {
+      if (v[i] < 0.0 || v[i] > 50.0) {
+        RCLCPP_ERROR(logger(), "zero_gravity_kp_floor[%zu]=%.2f 超出 [0, 50]", i + 1, v[i]);
+        return false;
+      }
+      zero_gravity_kp_floor_[i] = v[i];
+    }
   }
   if (!get("zero_gravity_allow_low_pose").empty()) {
     const std::string s = get("zero_gravity_allow_low_pose");
@@ -1034,6 +1072,11 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
     // ── 零重力下的逐轴诊断（2026-11-27 加）
     //   现场现象：joint2 往上顶、joint4/5/6 像没补偿往下掉。
     //   要判断到底是"没发出去"还是"发了但不够"，必须看到实际下发的值。
+    // 先算本轴的 kp/kd，诊断日志要用（原来诊断排在 kp_use 定义之前，编译不过）
+    const double kp_use_pre = kp_scale * kp_[j] + (1.0 - kp_scale) * zero_gravity_kp_floor_[j];
+    const double kd_use_pre = zg_now_diag
+        ? (zero_gravity_kd_v_[j] * (1.0 - kp_scale) + kd_[j] * kp_scale)
+        : kd_[j];
     if (zg_now_diag && j == 0) {
       RCLCPP_INFO_THROTTLE(logger(), throttle_clock(), 1000,
           "[零重力诊断] ff_ok=%d tau_scale=%.2f kp_scale=%.2f kp_now=%.1f kp_floor=%.1f kd=%.2f | "
@@ -1041,8 +1084,7 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
           "trim=[%.2f %.2f %.2f %.2f %.2f %.2f] "
           "tau_ff=[%.3f %.3f %.3f %.3f %.3f %.3f]",
           ff_ok ? 1 : 0, tau_scale_, kp_scale_,
-          kp_scale_ * kp_[0] + (1.0 - kp_scale_) * zero_gravity_kp_floor_,
-          zero_gravity_kp_floor_, zero_gravity_kd_,
+          kp_use_pre, zero_gravity_kp_floor_[j], zero_gravity_kd_v_[j],
           gravity_g_diag_[0], gravity_g_diag_[1], gravity_g_diag_[2],
           gravity_g_diag_[3], gravity_g_diag_[4], gravity_g_diag_[5],
           gravity_trim_[0], gravity_trim_[1], gravity_trim_[2],
@@ -1056,8 +1098,8 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
     // G02：kp 按 kp_scale 过渡（阶段 2 才降到 0），不是瞬间归零
     // kp_use：过渡期从满 kp 线性降到 kp_floor（而不是 0）
     //   kp_floor = 0 时行为与旧版完全一致（完全失重）
-    const double kp_use = kp_scale * kp_[j] + (1.0 - kp_scale) * zero_gravity_kp_floor_;
-    double kd_use = zg_now ? (zero_gravity_kd_ * (1.0 - kp_scale) + kd_[j] * kp_scale)
+    const double kp_use = kp_scale * kp_[j] + (1.0 - kp_scale) * zero_gravity_kp_floor_[j];
+    double kd_use = zg_now ? (zero_gravity_kd_v_[j] * (1.0 - kp_scale) + kd_[j] * kp_scale)
                            : kd_[j];
     // ── 零重力速度守护（2026-11-28 重做：滞回 + 速率限制）
     //

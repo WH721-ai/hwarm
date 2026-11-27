@@ -744,6 +744,30 @@ CallbackReturn HwArmHW::on_activate(const rclcpp_lifecycle::State& /*prev*/) {
               RCLCPP_ERROR(logger(), "%s", res->message.c_str()); return; }
             if (!motors_ready_) { res->success=false; res->message="拒绝：电机未就绪"; 
               RCLCPP_ERROR(logger(), "%s", res->message.c_str()); return; }
+
+              // ※ 2026-11-28 事故后加：位形检查
+              //
+              //   q2/q3 接近 0 时机械臂坐在机械限位或结构上，电机实际只输出
+              //   0.28~0.40 N·m，而模型预测 2.4 / 6.1 N·m。此时进零重力会
+              //   多给 +2.0 / +5.7 N·m，机械臂必然猛抬（11-27 现场发生过两次）。
+              //
+              //   阈值按"模型可信"的前提设：|q2| < 10° 或 |q3| < 15° 直接拒绝。
+              //   确实要研究零位行为的场合，把 zero_gravity_allow_low_pose 设 true。
+              if (!zero_gravity_allow_low_pose_) {
+                const double q2_deg = std::abs(pos_states_[1]) * 57.29577951308232;
+                const double q3_deg = std::abs(pos_states_[2]) * 57.29577951308232;
+                if (q2_deg < 10.0 || q3_deg < 15.0) {
+                  char buf[256];
+                  std::snprintf(buf, sizeof(buf),
+                      "拒绝：位形太靠近零位（q2=%.1f deg, q3=%.1f deg；要求 |q2|>=10 且 |q3|>=15）。"
+                      "零位附近机械臂被结构托住，模型会大幅高估负载，进零重力会猛抬。"
+                      "请先 goto_pose 到自由位形。",
+                      q2_deg, q3_deg);
+                  res->success = false; res->message = buf;
+                  RCLCPP_ERROR(logger(), "%s", buf);
+                  return;
+                }
+              }
           }
           // 切换前把位置命令对齐到当前位形：退出时机械臂停在原地不会弹回去
           for (size_t j = 0; j < ARM_DOF; ++j) pos_commands_[j] = pos_states_[j];
@@ -1017,15 +1041,47 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
     const double kp_use = kp_scale * kp_[j];
     double kd_use = zg_now ? (zero_gravity_kd_ * (1.0 - kp_scale) + kd_[j] * kp_scale)
                            : kd_[j];
-    // ── 零重力速度守护
-    //  某一轴转得比 zero_gravity_vel_limit_ 快，多半是重力前馈不够、机械臂在往下溜。
-    //  **不能直接去激活**（那会自由落体），而是把 kd 放大当刹车并节流报警。
-    if (zg_now && std::abs(vel_states_[j]) > zero_gravity_vel_limit_) {
-      kd_use = std::min(5.0, zero_gravity_kd_ * 4.0);
-      if (++vel_guard_count_ % 250 == 1)
+    // ── 零重力速度守护（2026-11-28 重做：滞回 + 速率限制）
+    //
+    // 旧实现的问题：|v| > limit 时 kd 一帧从 3.0 跳到 5.0。v 在阈值附近来回
+    // 穿越时 kd 每 8 ms 硬切一次，对 joint6（M=3e-4）相当于 2e4 rad/s^2 的
+    // 力矩阶跃 —— 现场就是"掰 j6 时电机剧烈抖动"。
+    //
+    // 现在：
+    //   · 进入阈值 vel_limit，退出阈值 vel_limit * 0.6   → 滞回，不会在边界抖
+    //   · kd 每周期最多变 guard_kd_slew_（默认 0.06 @125Hz ≈ 7.5/s）
+    //   · 守护 kd 上限受 tau_limit*0.8 约束：kd*v 不许超过额定力矩的 80%
+    //     （否则小惯量关节会瞬间饱和，那才是抖振的真正来源）
+    const bool guard_over = std::abs(vel_states_[j]) > zero_gravity_vel_limit_;
+    const bool guard_under = std::abs(vel_states_[j]) < zero_gravity_vel_limit_ * 0.6;
+    if (zg_now) {
+      if (!vel_guard_active_[j] && guard_over) {
+        vel_guard_active_[j] = true;
         RCLCPP_WARN(logger(),
-                    "零重力: joint%zu 速度 %.2f rad/s 超限 %.2f —— kd 临时提到 %.2f 刹车",
-                    j + 1, vel_states_[j], zero_gravity_vel_limit_, kd_use);
+                    "零重力: joint%zu 速度 %.2f rad/s 超限 %.2f —— 平滑加大 kd 刹车",
+                    j + 1, vel_states_[j], zero_gravity_vel_limit_);
+      } else if (vel_guard_active_[j] && guard_under) {
+        vel_guard_active_[j] = false;
+        RCLCPP_INFO(logger(), "零重力: joint%zu 速度已回落 %.2f rad/s —— 守护解除",
+                    j + 1, vel_states_[j]);
+      }
+      // 守护目标 kd：按 |v| 超限倍数线性抬升，但受力矩预算封顶
+      double guard_target = 0.0;
+      if (vel_guard_active_[j]) {
+        const double v = std::abs(vel_states_[j]);
+        // 上限：kd*v <= 0.8*tau_limit  =>  kd <= 0.8*tau_limit/v
+        const double kd_cap = v > 1e-6 ? 0.8 * tau_limit_[j] / v : 5.0;
+        guard_target = std::clamp(std::min(5.0, kd_cap), 0.0, 5.0);
+      }
+      // 速率限制逼近（这也是唯一改变 kd 的地方 —— 不存在阶跃）
+      const double slew = guard_kd_slew_;
+      guard_kd_state_[j] += std::clamp(guard_target - guard_kd_state_[j], -slew, slew);
+      if (guard_kd_state_[j] > 0.0) {
+        kd_use = std::max(kd_use, guard_kd_state_[j]);
+      }
+    } else {
+      vel_guard_active_[j] = false;
+      guard_kd_state_[j] = 0.0;
     }
     params.push_back({kp_use, kd_use,
                       d * pos_commands_[j],

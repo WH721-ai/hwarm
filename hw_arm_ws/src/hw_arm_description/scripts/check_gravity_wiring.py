@@ -112,17 +112,30 @@ def main() -> int:
           + (f"（{', '.join(w.strip()[:28] for w in writes)}）" if writes else "")
           + ("" if writes else " —— **只有声明和读取，斜坡恒为满额**"))
 
-    # ── W03：速度守护用实际模式
-    gm = re.search(r"^\s*if\s*\((.*zero_gravity_vel_limit_.*)\)\s*\{", src, re.M)
-    guard = gm
-    if guard is None:
-        check("W03", False, "找不到含 zero_gravity_vel_limit_ 的 if 条件")
+    # ── W03：速度守护必须用"实际模式"（zg_now / zero_gravity_srv_mode_）
+    #
+    # 2026-11-28 改：守护从"一个 if 里硬切 kd"重构成"滞回 + 速率限制"，
+    # 条件不再是 `if (|v| > zero_gravity_vel_limit_)` 而是
+    #   const bool guard_over = ... > zero_gravity_vel_limit_;
+    #   if (zg_now) { ... }
+    # 所以这里改成"在引用 vel_limit 的那几行附近必须出现 zg_now"。
+    lines = src.splitlines()
+    hit = [i for i, l in enumerate(lines) if "zero_gravity_vel_limit_" in l]
+    ok = False
+    where = ""
+    for i in hit:
+        lo, hi = max(0, i - 12), min(len(lines), i + 13)
+        window = "\n".join(lines[lo:hi])
+        if "zg_now" in window or "zero_gravity_srv_mode_" in window:
+            ok = True
+            where = lines[i].strip()
+            break
+    if not hit:
+        check("W03", False, "源码里根本没有 zero_gravity_vel_limit_")
     else:
-        cond = guard.group(1)
-        ok = "zg_now" in cond or "zero_gravity_srv_mode_" in cond
         check("W03", ok,
-              f"速度守护条件 = `{cond.strip()}`"
-              + ("" if ok else " —— **只判启动参数，服务进入的模式绕过守护**"))
+              (f"速度守护受 zg_now 门控（{len(hit)} 处引用）" if ok
+               else f"速度守护引用了 vel_limit 但附近没有 zg_now —— **服务进入的模式会绕过守护**"))
 
     # ── W04：服务进入分支必须有条件检查
     svc = find_function_body(src, 'create_service<std_srvs::srv::SetBool>(')

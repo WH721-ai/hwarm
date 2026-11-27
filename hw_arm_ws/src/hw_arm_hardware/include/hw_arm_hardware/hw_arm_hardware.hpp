@@ -225,6 +225,16 @@ class HwArmHW : public hardware_interface::SystemInterface {
   double ramp_t0_ = 0.0;                     // 激活时刻（steady clock 秒）
   std::vector<double> tau_limit_ = {120.0, 45.0, 28.0, 10.0, 7.0, 7.0};
   double zero_gravity_vel_limit_ = 2.0;      // rad/s
+  bool zero_gravity_allow_low_pose_ = false;  // 允许 |q2|<10 或 |q3|<15 进零重力
+  // 速度守护的滞回与速率限制（2026-11-28）
+  //   旧实现：|v|>limit 时 kd 一帧从 3.0 跳到 5.0，v 在阈值附近穿越时
+  //   每 8 ms 反复切换 -> 极限环抖振。joint6 惯量仅 3e-4，5.94 N·m 的
+  //   力矩阶跃相当于 2e4 rad/s^2，现场表现为"电机剧烈抖动"。
+  //   现在：进入阈值 vel_limit，退出阈值 vel_limit*0.6（滞回），
+  //         kd 每周期最多变 guard_kd_slew_step，并受 tau_limit*0.8 封顶。
+  bool vel_guard_active_[6] = {false, false, false, false, false, false};
+  double guard_kd_state_[6] = {0, 0, 0, 0, 0, 0};   // 平滑后的守护 kd（0=未启用）
+  double guard_kd_slew_ = 0.06;                     // 每周期允许的 kd 变化量
   int vel_guard_count_ = 0;                  // 连续超速周期数（用于日志）
 
   // ── 恒定力矩偏置修正（gravity_trim）

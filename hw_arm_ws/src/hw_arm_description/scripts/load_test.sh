@@ -141,9 +141,32 @@ else
   echo "（不加负载，只跑基线）"
 fi
 
+# 抓真正的 ros2_control_node 子进程（$LP 是 ros2 launch 的 PID）
+find_ctrl_pid() {
+  ps -eo pid,comm= | awk '$2=="ros2_control_no" {print $1; exit}'
+}
+CTRL_PID=$(find_ctrl_pid)
+CTRL_START=""
+if [ -n "$CTRL_PID" ] && [ -r "/proc/$CTRL_PID/stat" ]; then
+  # /proc/<pid>/stat 第 22 字段 = 进程启动时刻（开机后的时钟滴答数）
+  CTRL_START=$(awk '{print $22}' "/proc/$CTRL_PID/stat" 2>/dev/null)
+fi
+
 T0=$(date +%s)
+T0N=$(date +%s.%N)
 sleep "$SECS"
 T1=$(date +%s)
+T1N=$(date +%s.%N)
+
+# ── 存活证明：同一个 PID、同一个 starttime、两个时刻都活着
+NODE_ALIVE=0
+CTRL_START2=""
+if [ -n "$CTRL_PID" ] && [ -r "/proc/$CTRL_PID/stat" ]; then
+  CTRL_START2=$(awk '{print $22}' "/proc/$CTRL_PID/stat" 2>/dev/null)
+  if [ -n "$CTRL_START" ] && [ "$CTRL_START" = "$CTRL_START2" ]; then
+    NODE_ALIVE=1
+  fi
+fi
 cleanup_stress
 ok "负载已解除"
 
@@ -151,11 +174,24 @@ ok "负载已解除"
 echo
 echo "关闭控制节点（SIGINT，让它正常 shutdown）..."
 kill -INT "$LP" 2>/dev/null
-for _ in $(seq 20); do
-  kill -0 "$LP" 2>/dev/null || break
+CLOSED=0
+for _ in $(seq 60); do            # 最多等 30 s
+  kill -0 "$LP" 2>/dev/null || { CLOSED=1; break; }
   sleep 0.5
 done
-kill -9 "$LP" 2>/dev/null
+if [ "$CLOSED" -ne 1 ]; then
+  warn "SIGINT 30 秒没退出，改用 SIGTERM"
+  kill -TERM "$LP" 2>/dev/null
+  for _ in $(seq 10); do
+    kill -0 "$LP" 2>/dev/null || { CLOSED=1; break; }
+    sleep 0.5
+  done
+fi
+if [ "$CLOSED" -ne 1 ]; then
+  warn "SIGTERM 也没退出，改用 SIGKILL"
+  kill -9 "$LP" 2>/dev/null
+fi
+wait "$LP" 2>/dev/null
 # launch 的子进程可能残留
 sleep 1
 pkill -9 -x robot_state_pub 2>/dev/null || true
@@ -174,11 +210,15 @@ echo "════════════════════════�
 printf "  压测时长      : %d s（目标 %d s）%s\n" "$DUR" "$SECS" \
   "$([ "$DUR" -ge $((SECS-2)) ] && echo '' || echo '  ⚠️ 提前结束')"
 printf "  负载          : %s\n" "$([ "$NO_STRESS" -eq 1 ] && echo 无 || echo "${CPUS} 核自旋")"
-if [ "${SHUTDOWN:-0}" -gt 0 ]; then
+if [ "$NODE_ALIVE" -eq 1 ]; then
+  ok "存活证明：ros2_control_node(pid=$CTRL_PID) 在 T0 与 T1 都在运行，且是同一进程"
+elif [ "${SHUTDOWN:-0}" -gt 0 ]; then
   ok "日志有正常 shutdown 记录 → 证明节点整场都在跑"
 else
-  warn "日志没有 shutdown 记录（可能被 kill -9），时长以脚本计时为准"
+  warn "无法从进程或日志证明全程存活，时长仅以脚本计时为准"
 fi
+dim "  节点 pid=$CTRL_PID  启动时刻(clock ticks)=${CTRL_START:-?}"
+dim "  压测窗口: $(printf '%.2f' "$(echo "$T1N - $T0N" | bc)") 秒（高精度）"
 echo
 printf "  Overrun 总数  : %s\n" "${RUN_OVR:-0}"
 if [ "${RUN_OVR:-0}" -eq 0 ]; then

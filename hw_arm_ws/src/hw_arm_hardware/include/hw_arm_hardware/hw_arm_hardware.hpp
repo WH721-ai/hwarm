@@ -235,7 +235,15 @@ class HwArmHW : public hardware_interface::SystemInterface {
   double ramp_t0_ = 0.0;                     // 激活时刻（steady clock 秒）
   std::vector<double> tau_limit_ = {120.0, 45.0, 28.0, 10.0, 7.0, 7.0};
   double zero_gravity_vel_limit_ = 2.0;      // rad/s
-  bool zero_gravity_allow_low_pose_ = false;  // 允许 |q2|<10 或 |q3|<15 进零重力
+  bool zero_gravity_allow_low_pose_ = false;
+
+  // 纯力矩模式（2026-11-28）
+  //
+  // 为什么要这个：上层笛卡尔阻抗控制器通过 effort 命令给力矩，
+  // 但如果硬件仍然按 kp=70 跑位置环，effort 只会被**叠加**在位置环上 ——
+  // 位置环把机械臂死死拉回 pos_commands_，表现为"很硬、掰不动"（现场实测）。
+  // 上位机要做力矩级的柔顺/阻抗，硬件必须把 kp、kd 都置 0，只输出 tau。
+  bool torque_mode_ = false;  // 允许 |q2|<10 或 |q3|<15 进零重力
 
   // 零重力下的 kp 下限（2026-11-28 加）
   //

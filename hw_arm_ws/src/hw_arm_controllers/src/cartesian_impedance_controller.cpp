@@ -312,8 +312,14 @@ return_type CartesianImpedanceController::update(const rclcpp::Time& /*time*/,
   const double dt = period.seconds();
   auto cmd = impedance_.update(s, prev_torque_, dt);
   if (!cmd) {
-    RCLCPP_ERROR(get_node()->get_logger(), "阻抗故障 err=%d -> 输出零力矩",
-                 static_cast<int>(impedance_.error()));
+    RCLCPP_ERROR(get_node()->get_logger(),
+                 "阻抗故障 err=%d -> 输出零力矩。上一拍限幅: wrench=%d torque=%d slew=%d；"
+                 "gravity=[%.2f %.2f %.2f %.2f %.2f %.2f]",
+                 static_cast<int>(impedance_.error()),
+                 last_wrench_limited_ ? 1 : 0, last_torque_limited_ ? 1 : 0,
+                 last_rate_limited_ ? 1 : 0,
+                 s.gravity[0], s.gravity[1], s.gravity[2], s.gravity[3], s.gravity[4],
+                 s.gravity[5]);
     writeZero();
     return return_type::OK;
   }

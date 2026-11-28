@@ -103,6 +103,10 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   // 用序号判断"上次应用之后有没有新消息"。
   std::atomic<uint64_t> target_seq_{0};
   uint64_t applied_seq_ = 0;
+  // 上一拍指令的限幅标志：故障时打出来，否则只知道 "SaturationTimeout"
+  // 却不知道是 wrench / torque / slew 哪一项在饱和（2026-11-28 现场踩过）。
+  bool last_wrench_limited_ = false, last_torque_limited_ = false,
+       last_rate_limited_ = false;
 
   // 接口按下标访问：Jazzy 的 get_value() 是返回值而不是引用，
   // 所以不缓存指针，每周期直接 get_value()/set_value()。

@@ -363,6 +363,10 @@ bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
       zero_gravity_kd_v_[i] = v[i];
     }
   }
+  if (!get("torque_mode").empty()) {
+    const std::string s = get("torque_mode");
+    torque_mode_ = (s == "true" || s == "1" || s == "True");
+  }
   if (!get("zero_gravity_kp_floor").empty()) {
     std::vector<double> v;
     if (!parse_doubles("zero_gravity_kp_floor", get("zero_gravity_kp_floor"), v)) return false;
@@ -1109,9 +1113,15 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
     // G02：kp 按 kp_scale 过渡（阶段 2 才降到 0），不是瞬间归零
     // kp_use：过渡期从满 kp 线性降到 kp_floor（而不是 0）
     //   kp_floor = 0 时行为与旧版完全一致（完全失重）
-    const double kp_use = kp_scale * kp_[j] + (1.0 - kp_scale) * zero_gravity_kp_floor_[j];
-    double kd_use = zg_now ? (zero_gravity_kd_v_[j] * (1.0 - kp_scale) + kd_[j] * kp_scale)
-                           : kd_[j];
+    // torque_mode：kp/kd 全 0，只把 tau_commands_ 送下去（纯力矩控制）
+    //   上层阻抗控制器用这个模式才能真正"柔顺"
+    const double kp_use = torque_mode_
+        ? 0.0
+        : (kp_scale * kp_[j] + (1.0 - kp_scale) * zero_gravity_kp_floor_[j]);
+    double kd_use = torque_mode_
+                        ? 0.0
+                        : (zg_now ? (zero_gravity_kd_v_[j] * (1.0 - kp_scale) + kd_[j] * kp_scale)
+                                  : kd_[j]);
     // ── 零重力速度守护（2026-11-28 重做：滞回 + 速率限制）
     //
     // 旧实现的问题：|v| > limit 时 kd 一帧从 3.0 跳到 5.0。v 在阈值附近来回

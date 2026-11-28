@@ -1118,8 +1118,15 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
     const double kp_use = torque_mode_
         ? 0.0
         : (kp_scale * kp_[j] + (1.0 - kp_scale) * zero_gravity_kp_floor_[j]);
+    // torque_mode：kp 必须为 0（否则位置环跟阻抗控制器对着干），
+    // 但 **kd 绝对不能为 0**（2026-11-28 现场事故）：
+    //   joint4/6 的惯量只有 9e-4 / 3e-4 kg·m²，
+    //   4e-2 N·m 的模型误差就能给出 45 / 132 rad/s² 的角加速度，
+    //   0.36 s 内跑到 3.6 / 4.2 rad/s —— 实测就是这样触发的 InvalidSample。
+    //   所以 torque_mode 下复用零重力的逐轴 kd（zero_gravity_kd_each），
+    //   它本来就是按"惯量相差三个数量级"标定出来的。
     double kd_use = torque_mode_
-                        ? 0.0
+                        ? zero_gravity_kd_v_[j]
                         : (zg_now ? (zero_gravity_kd_v_[j] * (1.0 - kp_scale) + kd_[j] * kp_scale)
                                   : kd_[j]);
     // ── 零重力速度守护（2026-11-28 重做：滞回 + 速率限制）

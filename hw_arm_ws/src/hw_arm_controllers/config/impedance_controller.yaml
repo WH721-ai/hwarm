@@ -1,0 +1,43 @@
+# 笛卡尔阻抗控制器示例参数
+#
+# ⚠️ 接入时必须同时把硬件侧的重力补偿关掉：
+#      gravity_compensation:=false
+#    否则硬件会把 g(q) 再加一遍（控制器自己已经把 gravity_torque 加到输出里）。
+#
+# 刚度 K 的量级参考（实测各轴重力误差决定"稳态偏移 = 误差/K"）：
+#   拖动示教（轻）   K ≈ 50~200  N/m  /  5~20   N·m/rad
+#   柔顺装配         K ≈ 500~1500 N/m / 30~80  N·m/rad
+#   接近刚性         K ≈ 3000+    N/m / 200+   N·m/rad
+hw_arm_impedance_controller:
+  ros__parameters:
+    joints: [joint1, joint2, joint3, joint4, joint5, joint6]
+    end_effector_frame: tool0
+
+    # 笛卡尔刚度 [x y z (N/m), rx ry rz (N·m/rad)]
+    # LOCAL_WORLD_ALIGNED 下的 6 维，前 3 平移后 3 旋转
+    stiffness: [400.0, 400.0, 400.0, 30.0, 30.0, 30.0]
+
+    # 等效惯量（用于算阻尼 D = 2ζ√(K·m)），量纲 [kg, kg·m²]
+    effective_inertia: [2.0, 2.0, 2.0, 0.05, 0.05, 0.05]
+
+    # 阻尼比：1.0 = 临界阻尼（推荐）；>1 过阻尼更稳但更迟钝
+    damping_ratio: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+    # 笛卡尔力/力矩上限
+    wrench_limit: [25.0, 25.0, 25.0, 4.0, 4.0, 4.0]
+
+    # 关节力矩上限（物理连续额度，不是 MIT 的 tMax）
+    # joint1 DM-J10010L / joint2 DM-J6216P / joint3 DM-J4340 / joint4-6 DM-J4310
+    torque_limit: [12.0, 10.0, 8.0, 3.0, 3.0, 3.0]
+
+    # 力矩变化率上限 [N·m/s]：防止增量式阶跃
+    torque_slew: [150.0, 120.0, 100.0, 40.0, 40.0, 40.0]
+
+    joint_speed_limit: 3.0          # rad/s，超过即判样本无效
+    filter_time: 0.05               # s，参考位姿一阶滤波时间常数
+    reference_linear_speed: 0.5     # m/s，参考点移动速度上限
+    reference_angular_speed: 1.0    # rad/s
+    activation_time: 0.5            # s，从"上一个实际力矩"平滑切到阻抗输出
+    max_position_error: 0.05        # m，跟踪误差故障阈值
+    max_rotation_error: 0.5         # rad
+    max_limited_time: 0.5           # s，持续饱和多久判故障

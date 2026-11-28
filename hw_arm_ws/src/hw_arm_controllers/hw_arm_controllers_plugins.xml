@@ -1,0 +1,10 @@
+<library path="hw_arm_controllers">
+  <class name="hw_arm_controllers/CartesianImpedanceController"
+         type="hw_arm_controllers::CartesianImpedanceController"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      笛卡尔阻抗（柔顺）控制器。τ = g(q) + Jᵀ(K·e − D·v)。
+      需要硬件导出 joint_X/gravity_torque 状态接口，且 gravity_compensation 必须为 false。
+    </description>
+  </class>
+</library>

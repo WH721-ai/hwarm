@@ -644,6 +644,12 @@ std::vector<hardware_interface::StateInterface> HwArmHW::export_state_interfaces
     out.emplace_back(joint_names_[i], hardware_interface::HW_IF_POSITION, &pos_states_[i]);
     out.emplace_back(joint_names_[i], hardware_interface::HW_IF_VELOCITY, &vel_states_[i]);
     out.emplace_back(joint_names_[i], hardware_interface::HW_IF_EFFORT, &tau_states_[i]);
+    // 重力前馈的**评估值**（不同于 effort：effort 是电机实测输出）
+    // 为什么导出：上层阻抗控制器需要 g(q) 作为前馈项，而且必须和硬件用
+    // **同一个模型、同一份 θ̂**。各算一遍迟早会不一致。
+    // 注意：本接口在 write() 里更新，控制器在下一周期的 update() 读到，
+    //       延迟一个控制周期（8 ms @125 Hz），对重力这种慢变量无所谓。
+    out.emplace_back(joint_names_[i], "gravity_torque", &gravity_tau_[i]);
   }
   return out;
 }
@@ -961,8 +967,13 @@ return_type HwArmHW::write(const rclcpp::Time& /*time*/, const rclcpp::Duration&
   //
   // 用**实测关节角**而不是命令角：命令角在轨迹跟踪时超前，
   // 用实测角算出来的重力矩才是此刻真正需要的补偿量。
-  const bool compute_gravity = gravity_comp_ && model_ && ws_;
-  const bool apply_gravity = compute_gravity && !gravity_dry_run_;
+  // ⚠️ 不再要求 gravity_comp_ —— 只要模型加载了就计算，供 gravity_torque 状态接口用
+  const bool compute_gravity = model_ && ws_;
+  // apply_gravity：是否把 tau_ff 真的**加到输出**上
+  // compute_gravity：是否**计算** g(q)
+  // 2026-11-28：把"算"和"用"分开 —— 上层阻抗控制器要读 gravity_torque，
+  //   所以即使 gravity_compensation:=false 也要算，只是不加到输出。
+  const bool apply_gravity = compute_gravity && !gravity_dry_run_ && gravity_comp_;
   // ── 过渡状态机（2026-11-26 审阅后重做）
   //
   // 旧做法：从 ramp_t0_ 起算 t，tau_scale = t/T。服务每次切换都重置

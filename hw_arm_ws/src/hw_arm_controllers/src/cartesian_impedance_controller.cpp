@@ -109,10 +109,12 @@ CallbackReturn CartesianImpedanceController::on_configure(
     const rclcpp_lifecycle::State& /*previous_state*/) {
   auto node = get_node();
   // URDF：从 robot_description 参数取（与硬件用同一份）
+  // robot_description 是 robot_state_publisher 发布的**话题**，不是本节点参数。
+  // 拿不到就退回包的 install 里的 URDF —— 它和硬件加载的是同一个文件
+  // （构建期由 xacro 展开生成），因此仍然同源。
   std::string urdf;
-  if (!node->get_parameter("robot_description", urdf)) {
-    RCLCPP_ERROR(node->get_logger(), "拿不到 robot_description");
-    return CallbackReturn::ERROR;
+  if (!node->get_parameter("robot_description", urdf) || urdf.empty()) {
+    RCLCPP_INFO(node->get_logger(), "没有 robot_description 参数，改用包内的 hw_arm.urdf");
   }
   // RobotModel 只提供 load(path)。这里用包的 install 里的 URDF ——
   // 它和硬件加载的是**同一个文件**（构建期由 xacro 展开生成），因此一致。

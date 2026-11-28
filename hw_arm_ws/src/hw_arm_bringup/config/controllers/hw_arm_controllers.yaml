@@ -24,6 +24,12 @@ controller_manager:
     hw_arm_forward_position_controller:
       type: forward_command_controller/ForwardCommandController
 
+    # 笛卡尔阻抗（柔顺）。参数见 hw_arm_controllers/config/impedance_controller.yaml
+    # ⚠️ 用这个控制器时硬件必须 gravity_compensation:=false
+    #    （控制器已经把 g(q) 加进输出，否则会加两遍）
+    hw_arm_impedance_controller:
+      type: hw_arm_controllers/CartesianImpedanceController
+
 hw_arm_controller:
   ros__parameters:
     joints:

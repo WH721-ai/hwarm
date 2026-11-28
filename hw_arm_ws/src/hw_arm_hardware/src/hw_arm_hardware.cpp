@@ -496,7 +496,7 @@ bool HwArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
       RCLCPP_WARN(logger(), "URDF 校验: %s", w.c_str());
 
     ws_ = std::make_unique<hw_arm_algorithms::RobotWorkspace>(*model_);
-    gravity_tau_.assign(ARM_DOF, 0.0);
+    // gravity_tau_ 是 std::array，构造即已清零，不需要 assign
 
       // ── 加载辨识出的重力参数（C-05）
       //   给了 gravity_params_path 就必须读成功，否则直接返回 false ——

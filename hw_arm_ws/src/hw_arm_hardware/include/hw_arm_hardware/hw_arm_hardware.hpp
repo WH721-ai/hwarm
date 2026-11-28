@@ -208,7 +208,16 @@ class HwArmHW : public hardware_interface::SystemInterface {
 
   std::unique_ptr<hw_arm_algorithms::RobotModel> model_;
   std::unique_ptr<hw_arm_algorithms::RobotWorkspace> ws_;
-  std::vector<double> gravity_tau_;   // 最近一次算出的 g(q)，方便日志/调试
+  // ⚠️ 必须是定长数组，不能是 vector（2026-11-28 崩溃事故）
+  //
+  // 原实现是 std::vector<double>，只在"加载重力模型"那条分支里 assign(6, 0)。
+  // 而 export_state_interfaces() 在 on_init 里无条件导出 &gravity_tau_[i]。
+  // 于是 gravity_compensation:=false 时 vector 还是空的 ——
+  //   · &gravity_tau_[i] 是越界访问（UB）
+  //   · controller_manager 报 "Cannot register state introspection ... 
+  //     without a valid value pointer or initialized value"
+  //   · 随后 RT 线程崩溃，load_controller 服务永不响应（现场表现为整机挂死）
+  std::array<double, ARM_DOF> gravity_tau_{{0, 0, 0, 0, 0, 0}};  // 最近一次算出的 g(q)
 
   // ── 拖动示教（零重力）的安全机制（2026-11-26 新增）
   //

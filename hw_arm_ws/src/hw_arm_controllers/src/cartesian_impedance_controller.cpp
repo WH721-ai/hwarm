@@ -52,9 +52,9 @@ CartesianImpedanceController::state_interface_configuration() const {
   for (const auto& j : joint_names_) {
     cfg.names.push_back(j + "/" + hardware_interface::HW_IF_POSITION);
     cfg.names.push_back(j + "/" + hardware_interface::HW_IF_VELOCITY);
-    // ⚠️ 只读硬件导出的那一个重力评估值 —— 不在这里重算，
-    //    否则两个模型（硬件的 θ̂ 与这里的）迟早不一致。
-    cfg.names.push_back(j + "/gravity_torque");
+    // 只有显式要求时才读硬件的 g(q)：mock_components 不导出这个接口，
+    // 硬性依赖会让控制器在假硬件上根本无法 activate。
+    if (use_hardware_gravity_) cfg.names.push_back(j + "/gravity_torque");
   }
   return cfg;
 }
@@ -79,6 +79,8 @@ CallbackReturn CartesianImpedanceController::on_init() {
   node->declare_parameter("max_position_error", 0.05);
   node->declare_parameter("max_rotation_error", 0.5);
   node->declare_parameter("max_limited_time", 0.5);
+  node->declare_parameter("use_hardware_gravity", false);
+  node->declare_parameter("gravity_params_path", std::string(""));
 
   node->get_parameter("joints", joint_names_);
   if (joint_names_.size() != 6) {
@@ -102,6 +104,8 @@ CallbackReturn CartesianImpedanceController::on_init() {
   node->get_parameter("max_position_error", max_position_error_);
   node->get_parameter("max_rotation_error", max_rotation_error_);
   node->get_parameter("max_limited_time", max_limited_time_);
+  node->get_parameter("use_hardware_gravity", use_hardware_gravity_);
+  node->get_parameter("gravity_params_path", gravity_params_path_);
   return CallbackReturn::SUCCESS;
 }
 
@@ -141,6 +145,25 @@ CallbackReturn CartesianImpedanceController::on_configure(
     return CallbackReturn::ERROR;
   }
 
+  // 自算路径需要 θ̂；显式给路径就必须读成功（不静默退回标称参数）
+  if (!gravity_params_path_.empty()) {
+    hw_arm_algorithms::GravityParams gp;
+    std::string err;
+    if (!hw_arm_algorithms::loadGravityParams(gravity_params_path_, gp, &err)) {
+      RCLCPP_ERROR(node->get_logger(), "读重力参数失败 %s: %s",
+                   gravity_params_path_.c_str(), err.c_str());
+      return CallbackReturn::ERROR;
+    }
+    gravity_theta_ = gp.theta;
+    gravity_offset_ = gp.offsets.size() == 6 ? gp.offsets : Eigen::VectorXd::Zero(6);
+    RCLCPP_INFO(node->get_logger(), "自算重力：θ̂ rank=%d rms=%.3f（%s）",
+                gp.rank, gp.rms, gravity_params_path_.c_str());
+  } else if (!use_hardware_gravity_) {
+    RCLCPP_WARN(node->get_logger(),
+                "gravity_params_path 为空且 use_hardware_gravity=false "
+                "-> 梯度前馈恒为 0（只有阻尼+弹簧，机械臂会下沉）");
+  }
+
   ci::Config cfg;
   for (int i = 0; i < 6; ++i) {
     cfg.stiffness[i] = stiffness_[static_cast<size_t>(i)];
@@ -169,6 +192,7 @@ CallbackReturn CartesianImpedanceController::on_configure(
       "~/target_pose", rclcpp::QoS(1),
       [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         target_buffer_.writeFromNonRT(*msg);
+        target_seq_.fetch_add(1, std::memory_order_release);
       });
   state_pub_ = node->create_publisher<std_msgs::msg::Float64MultiArray>("~/state", 10);
   stop_srv_ = node->create_service<std_srvs::srv::Trigger>(
@@ -185,8 +209,16 @@ CallbackReturn CartesianImpedanceController::on_configure(
 
 CallbackReturn CartesianImpedanceController::on_activate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
+  // 根据实际声明了几个接口决定 stride —— 不能写死
+  state_stride_ = use_hardware_gravity_ ? 3 : 2;
+  if (state_interfaces_.size() != static_cast<size_t>(6 * state_stride_)) {
+    RCLCPP_ERROR(get_node()->get_logger(),
+                 "状态接口数量不对：期望 %d，实际 %zu",
+                 6 * state_stride_, state_interfaces_.size());
+    return CallbackReturn::ERROR;
+  }
   // 丢弃旧目标
-  has_target_ = false;
+  applied_seq_ = target_seq_.load(std::memory_order_acquire);
   prev_torque_.setZero();
 
   ci::Sample s;
@@ -217,8 +249,8 @@ bool CartesianImpedanceController::buildSample(ci::Sample& out) const {
   if (!model_ || !ws_) return false;
   Eigen::VectorXd q(model_->nq()), dq(model_->nv());
   for (int i = 0; i < 6; ++i) {
-    q[i] = state_interfaces_[static_cast<size_t>(i) * 3 + 0].get_value();
-    dq[i] = state_interfaces_[static_cast<size_t>(i) * 3 + 1].get_value();
+    q[i] = state_interfaces_[static_cast<size_t>(i) * static_cast<size_t>(state_stride_) + 0].get_value();
+    dq[i] = state_interfaces_[static_cast<size_t>(i) * static_cast<size_t>(state_stride_) + 1].get_value();
   }
   for (int i = 0; i < model_->nq(); ++i) {
     if (!std::isfinite(q[i]) || !std::isfinite(dq[i])) return false;
@@ -234,8 +266,15 @@ bool CartesianImpedanceController::buildSample(ci::Sample& out) const {
   out.pose.q = Eigen::Quaterniond(pose.rotation());
   out.J = J;
   out.dq = dq;
-  for (int i = 0; i < 6; ++i)
-    out.gravity[i] = state_interfaces_[static_cast<size_t>(i) * 3 + 2].get_value();
+  if (use_hardware_gravity_) {
+    for (int i = 0; i < 6; ++i)
+      out.gravity[i] = state_interfaces_[static_cast<size_t>(i) * static_cast<size_t>(state_stride_) + 2].get_value();
+  } else if (gravity_theta_.size() > 0) {
+    Eigen::VectorXd g;
+    hw_arm_algorithms::computeGravityFromParamsAndOffset(*model_, *ws_, q, gravity_theta_,
+                                                        gravity_offset_, g);
+    for (int i = 0; i < 6; ++i) out.gravity[i] = g[i];
+  }  // 否则保持 0
   out.valid = true;
   return true;
 }
@@ -257,15 +296,16 @@ return_type CartesianImpedanceController::update(const rclcpp::Time& /*time*/,
   }
 
   // 只在 Active 之后接受外部目标
-  auto* tgt = target_buffer_.readFromRT();
-  if (tgt && impedance_.state() == ci::State::Active) {
+  const uint64_t seq = target_seq_.load(std::memory_order_acquire);
+  if (seq != applied_seq_ && impedance_.state() == ci::State::Active) {
+    applied_seq_ = seq;   // 新目标只处理一次；失败也前进，避免每周期重复报警
+    auto* tgt = target_buffer_.readFromRT();
     ci::Pose p;
     p.p = Eigen::Vector3d(tgt->pose.position.x, tgt->pose.position.y, tgt->pose.position.z);
     p.q = Eigen::Quaterniond(tgt->pose.orientation.w, tgt->pose.orientation.x,
                              tgt->pose.orientation.y, tgt->pose.orientation.z);
-    if (!impedance_.setTarget(p)) {
-      RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
-                           "目标位姿被拒（跳变过大或非法）");
+    if (tgt && !impedance_.setTarget(p)) {
+      RCLCPP_WARN(get_node()->get_logger(), "目标位姿被拒（跳变过大或非法）");
     }
   }
 

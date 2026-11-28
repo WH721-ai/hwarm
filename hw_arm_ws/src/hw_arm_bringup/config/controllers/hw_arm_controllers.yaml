@@ -89,3 +89,30 @@ joint_state_broadcaster:
       - joint4
       - joint5
       - joint6
+
+hw_arm_impedance_controller:
+  ros__parameters:
+    joints: [joint1, joint2, joint3, joint4, joint5, joint6]
+    end_effector_frame: tool0
+
+    # 重力前馈来源：
+    #   false（默认）= 控制器自己用 gravity_params_path 的 θ̂ 算 g(q)
+    #                   —— 假硬件也能跑，mock 不导出 gravity_torque
+    #   true          = 读硬件的 joint_X/gravity_torque（真机可选，省一次 RNEA）
+    use_hardware_gravity: false
+    gravity_params_path: /home/linux/hw_arm/algo/data/gravity_theta.yaml
+
+    stiffness: [400.0, 400.0, 400.0, 30.0, 30.0, 30.0]
+    effective_inertia: [2.0, 2.0, 2.0, 0.05, 0.05, 0.05]
+    damping_ratio: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    wrench_limit: [25.0, 25.0, 25.0, 4.0, 4.0, 4.0]
+    torque_limit: [12.0, 10.0, 8.0, 3.0, 3.0, 3.0]
+    torque_slew: [150.0, 120.0, 100.0, 40.0, 40.0, 40.0]
+    joint_speed_limit: 3.0
+    filter_time: 0.05
+    reference_linear_speed: 0.5
+    reference_angular_speed: 1.0
+    activation_time: 0.5
+    max_position_error: 0.05
+    max_rotation_error: 0.5
+    max_limited_time: 0.5

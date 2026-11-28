@@ -130,6 +130,7 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
 
   void writeCmd(const std::array<double, 6>& t);
   void writeZero();
+  void writeGravity(const hw_arm_algorithms::impedance::Vec6& g);
 
   // 上一拍实际下发（用于力矩变化率限制与激活混合）
   hw_arm_algorithms::impedance::Vec6 prev_torque_ =

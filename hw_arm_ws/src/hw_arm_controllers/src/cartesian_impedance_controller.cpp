@@ -332,7 +332,11 @@ return_type CartesianImpedanceController::update(const rclcpp::Time& /*time*/,
                  "  dq=[%.2f %.2f %.2f %.2f %.2f %.2f]（限 %.2f rad/s）",
                  s.dq[0], s.dq[1], s.dq[2], s.dq[3], s.dq[4], s.dq[5],
                  joint_speed_limit_);
-    writeZero();
+    // ⚠️ 故障时**不能输出零力矩**（2026-11-28 现场：一 fault 就整臂瘫软下坠）。
+    //   torque_mode 下没有 kp 兜底，零力矩等于自由落体。
+    //   这里退化为"只给重力前馈"——机械臂被托住但没有任何柔顺/刚度，
+    //   是故障状态下最接近安全的行为。真正的保护仍要靠急停/物理兜底。
+    writeGravity(s.gravity);
     return return_type::OK;
   }
   std::array<double, 6> out{};
@@ -348,6 +352,10 @@ void CartesianImpedanceController::writeCmd(const std::array<double, 6>& t) {
 }
 
 void CartesianImpedanceController::writeZero() { writeCmd({0, 0, 0, 0, 0, 0}); }
+
+void CartesianImpedanceController::writeGravity(const ci::Vec6& g) {
+  writeCmd({g[0], g[1], g[2], g[3], g[4], g[5]});
+}
 
 void CartesianImpedanceController::publishState() {
   if (!state_pub_) return;

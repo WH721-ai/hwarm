@@ -219,17 +219,25 @@ CallbackReturn CartesianImpedanceController::on_activate(
   }
   // 丢弃旧目标
   applied_seq_ = target_seq_.load(std::memory_order_acquire);
-  prev_torque_.setZero();
 
   ci::Sample s;
   if (!buildSample(s)) {
     RCLCPP_ERROR(get_node()->get_logger(), "激活时构建 Sample 失败");
     return CallbackReturn::ERROR;
   }
-  if (!impedance_.activate(s, prev_torque_)) {
-    RCLCPP_ERROR(get_node()->get_logger(), "impedance.activate 失败");
+  // ⚠️ handover 必须传 "此刻能让机械臂静止的支撑力矩"，也就是 g(q)，
+  //    不能传 0（2026-11-28 现场事故）。
+  //    激活混合是 raw = (1-w)*handover + w*desired，
+  //    传 0 的话前 0.2~0.3 s 只给了一半甚至更少的重力支撑 ->
+  //    机械臂自由下落 -> |dq| 很快超过 joint_speed_limit ->
+  //    validSample() 判 InvalidSample(err=2) -> 故障 -> 输出零力矩 -> 直接掉。
+  ci::Vec6 handover = s.gravity;
+  if (!impedance_.activate(s, handover)) {
+    RCLCPP_ERROR(get_node()->get_logger(), "impedance.activate 失败 err=%d",
+                 static_cast<int>(impedance_.error()));
     return CallbackReturn::ERROR;
   }
+  prev_torque_ = handover;
   // 初始目标 = 当前位姿（激活后先"保持不动"，再等外部给目标）
   ci::Pose p;
   p.p = s.pose.p;
@@ -320,6 +328,10 @@ return_type CartesianImpedanceController::update(const rclcpp::Time& /*time*/,
                  last_rate_limited_ ? 1 : 0,
                  s.gravity[0], s.gravity[1], s.gravity[2], s.gravity[3], s.gravity[4],
                  s.gravity[5]);
+    RCLCPP_ERROR(get_node()->get_logger(),
+                 "  dq=[%.2f %.2f %.2f %.2f %.2f %.2f]（限 %.2f rad/s）",
+                 s.dq[0], s.dq[1], s.dq[2], s.dq[3], s.dq[4], s.dq[5],
+                 joint_speed_limit_);
     writeZero();
     return return_type::OK;
   }
